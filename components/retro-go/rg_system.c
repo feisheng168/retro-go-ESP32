@@ -269,7 +269,7 @@ static void system_monitor_task(void *arg)
         update_indicators(false);
 
         // Try to avoid complex conversions that could allocate, prefer rounding/ceiling if necessary.
-        rg_system_log(RG_LOG_DEBUG, NULL, "STACK:%d, HEAP:%d+%d (%d+%d), BUSY:%d%%, FPS:%d (S:%d R:%d+%d), BATT:%d",
+        rg_system_log(RG_LOG_DEBUG, NULL, "STACK:%d, HEAP:%d+%d (%d+%d), BUSY:%d%%, FPS:%d (S:%d R:%d+%d), SPEED:%d%%, BATT:%d",
             statistics.freeStack[0],
             statistics.freeMemoryInt / 1024,
             statistics.freeMemoryExt / 1024,
@@ -280,6 +280,7 @@ static void system_monitor_task(void *arg)
             (int)roundf(statistics.skippedFPS),
             (int)roundf(statistics.partialFPS),
             (int)roundf(statistics.fullFPS),
+            (int)roundf(statistics.speedPercent),
             (int)roundf((battery.volts * 1000) ?: battery.level));
 
         for (size_t i = 0; i < RG_COUNT(tasks); ++i)

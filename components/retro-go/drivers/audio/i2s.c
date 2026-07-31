@@ -23,8 +23,8 @@
 // We can safely assume that no application will submit more than 640 audio frames per call to
 // driver_submit (32000/50). Using a single large buffer risks blocking the call needlessly because
 // some apps submit more than once per cycle or there could be occasional jitter (early submission).
-#define DMA_BUFFER_COUNT 4
-#define DMA_BUFFER_LEN 180
+#define DMA_BUFFER_COUNT 6
+#define DMA_BUFFER_LEN 256
 
 static struct {
     const char *last_error;

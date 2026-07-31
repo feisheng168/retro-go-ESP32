@@ -9,6 +9,12 @@
 
 #ifdef ESP_PLATFORM
 #include <driver/gpio.h>
+#include <esp_idf_version.h>
+// The legacy ADC driver (driver/adc.h) and esp_adc_cal.h are deprecated on
+// IDF 5.x and REMOVED in IDF 6. Auto-select the new esp_adc/* driver on 5.3+.
+#if !defined(USE_ADC_DRIVER_NG) && ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 3, 0)
+#define USE_ADC_DRIVER_NG
+#endif
 #ifdef USE_ADC_DRIVER_NG
 #include <esp_adc/adc_oneshot.h>
 #include <esp_adc/adc_cali.h>
