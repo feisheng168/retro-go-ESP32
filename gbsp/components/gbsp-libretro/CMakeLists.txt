@@ -48,7 +48,7 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
 )
 
 # Suppress warnings in third-party code; no-exceptions/rtti to avoid libstdc++ bloat
-target_compile_options(${COMPONENT_LIB} PRIVATE -w -Oz -fno-exceptions -fno-rtti -msmall-data-limit=0)
+target_compile_options(${COMPONENT_LIB} PRIVATE -w -O3 -fomit-frame-pointer -ffast-math -fno-exceptions -fno-rtti -msmall-data-limit=0)
 
 # Prevent C++ from pulling in libstdc++ (templates are compile-time only)
 idf_build_set_property(LINK_OPTIONS "-nostdlib++" APPEND)

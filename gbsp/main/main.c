@@ -71,8 +71,8 @@ static rg_gui_event_t change_max_frameskip(rg_gui_option_t *option, rg_gui_event
     if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
     {
         if (event == RG_DIALOG_PREV && --max_frameskip < 0)
-            max_frameskip = 4;
-        if (event == RG_DIALOG_NEXT && ++max_frameskip > 4)
+            max_frameskip = 5;
+        if (event == RG_DIALOG_NEXT && ++max_frameskip > 5)
             max_frameskip = 0;
         rg_settings_set_number(NS_APP, SETTING_MAX_FRAMESKIP, max_frameskip);
     }
