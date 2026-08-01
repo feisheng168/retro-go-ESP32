@@ -39,13 +39,22 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE
     NDEBUG
     HAVE_STRLCPY
     ESP_PLATFORM
-    HAVE_DYNAREC
-    MMAP_JIT_CACHE
-    RISCV_ARCH
-    # ROM cache in PSRAM (MB). 8 is safe for the P4-devkit; raise to 16/32 if the
-    # board has enough PSRAM. Larger ROMs still work via SD page-swapping.
-    ROM_BUFFER_SIZE=16
+    SMALL_TRANSLATION_CACHE
 )
+
+if(IDF_TARGET MATCHES "esp32p4|esp32s31")
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        MMAP_JIT_CACHE
+        RISCV_ARCH
+        HAVE_DYNAREC
+        HAVE_JIT
+        ROM_BUFFER_SIZE=32
+    )
+else()
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE
+        ROM_BUFFER_SIZE=8
+    )
+endif()
 
 # Suppress warnings in third-party code; no-exceptions/rtti to avoid libstdc++ bloat
 target_compile_options(${COMPONENT_LIB} PRIVATE -w -O3 -fomit-frame-pointer -ffast-math -fno-exceptions -fno-rtti -msmall-data-limit=0)

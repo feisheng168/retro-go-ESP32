@@ -183,16 +183,6 @@ typedef u32 fixed8_24;
   #include <stdarg.h>
   #include <sys/time.h>
   #include <time.h>
-  #include "esp_heap_caps.h"
-  /* Route large allocations to PSRAM */
-  static inline void *gpsp_malloc(size_t sz) {
-      if (sz >= 64 * 1024) {
-          void *p = heap_caps_malloc(sz, MALLOC_CAP_SPIRAM);
-          if (p) return p;
-      }
-      return malloc(sz);
-  }
-  #define gpsp_malloc_override(s) gpsp_malloc(s)
 #else
   #include <unistd.h>
   #include <time.h>

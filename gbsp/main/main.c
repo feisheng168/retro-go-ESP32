@@ -4,8 +4,6 @@
 
 #include "gpsp_esp.h"
 
-//#define FRAME_DOUBLE_BUFFERING
-
 // GBA native output resolution
 #define GBA_SCREEN_WIDTH  240
 #define GBA_SCREEN_HEIGHT 160
@@ -15,11 +13,13 @@
 #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 60 + 1)
 
 static const char *SETTING_MAX_FRAMESKIP = "max_frameskip";
+static const char *SETTING_GBSP_FRAME_DOUBLE_BUFFERING = "gba_frame_double_buffering";
 
 // Rendering skip flag owned by the gpSP core (defined in gpsp_esp.c).
 // When non-zero, the core's PPU skips scanline rendering for that frame.
 extern uint32_t skip_next_frame;
-static int32_t max_frameskip = 5;
+static int max_frameskip = 5;
+static bool frame_double_buffering = true;
 
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
@@ -76,7 +76,25 @@ static rg_gui_event_t change_max_frameskip(rg_gui_option_t *option, rg_gui_event
             max_frameskip = 0;
         rg_settings_set_number(NS_APP, SETTING_MAX_FRAMESKIP, max_frameskip);
     }
-    sprintf(option->value, "%ld", max_frameskip);
+    sprintf(option->value, "%d", max_frameskip);
+
+    return RG_DIALOG_VOID;
+}
+
+static rg_gui_event_t toggle_frame_double_buffering(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_PREV || event == RG_DIALOG_NEXT)
+    {
+        frame_double_buffering = !frame_double_buffering;
+        // TODO: add a per game setting
+        rg_settings_set_number(NS_APP, SETTING_GBSP_FRAME_DOUBLE_BUFFERING, frame_double_buffering);
+        if (rg_gui_confirm(_("Double frame buffering changed!"), _("For these changes to take effect you must restart your device.\nrestart now?"), true))
+        {
+            rg_system_exit();
+        }
+        
+    }
+    strcpy(option->value, frame_double_buffering ? _("On") : _("Off"));
 
     return RG_DIALOG_VOID;
 }
@@ -84,6 +102,7 @@ static rg_gui_event_t change_max_frameskip(rg_gui_option_t *option, rg_gui_event
 static void options_handler(rg_gui_option_t *dest)
 {
     *dest++ = (rg_gui_option_t){0, _("Change max frameskip"), "-", RG_DIALOG_FLAG_NORMAL, &change_max_frameskip};
+    *dest++ = (rg_gui_option_t){0, _("Double frame buffering"), "-", RG_DIALOG_FLAG_NORMAL, &toggle_frame_double_buffering};
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
@@ -123,15 +142,21 @@ void app_main(void)
         },
     });
 
+    // load settings
     max_frameskip = rg_settings_get_number(NS_APP, SETTING_MAX_FRAMESKIP, 1);
-
-    // +1 line: the gpSP core reserves an extra scanline for winobj effects.
-    updates[0] = rg_surface_create(GBA_SCREEN_WIDTH, GBA_SCREEN_HEIGHT + 1, RG_PIXEL_565_LE, MEM_FAST);
-#ifdef FRAME_DOUBLE_BUFFERING
-    updates[1] = rg_surface_create(GBA_SCREEN_WIDTH, GBA_SCREEN_HEIGHT + 1, RG_PIXEL_565_LE, MEM_FAST);
-#else
-    updates[1] = updates[0];
-#endif
+    frame_double_buffering = rg_settings_get_number(NS_APP, SETTING_GBSP_FRAME_DOUBLE_BUFFERING, true);
+    
+    if(frame_double_buffering)
+    {
+        updates[0] = rg_surface_create(GBA_SCREEN_WIDTH, GBA_SCREEN_HEIGHT + 1, RG_PIXEL_565_LE, MEM_FAST);
+        updates[1] = rg_surface_create(GBA_SCREEN_WIDTH, GBA_SCREEN_HEIGHT + 1, RG_PIXEL_565_LE, MEM_FAST);
+    }
+    else
+    {
+        updates[0] = rg_surface_create(GBA_SCREEN_WIDTH, GBA_SCREEN_HEIGHT + 1, RG_PIXEL_565_LE, MEM_FAST);
+        updates[1] = updates[0];
+    }
+    
     if (!updates[0] || !updates[1])
         RG_PANIC("Failed to allocate framebuffers");
     updates[0]->height = GBA_SCREEN_HEIGHT;
@@ -151,7 +176,11 @@ void app_main(void)
     if (app->bootFlags & RG_BOOT_RESUME)
         rg_emu_load_state(app->saveSlot);
 
+#ifdef HAVE_DYNAREC
     RG_LOGI("emulation loop (RISC-V dynarec)");
+#else
+    RG_LOGI("emulation loop (Interpreter)");
+#endif
 
     static rg_audio_sample_t mixbuffer[AUDIO_BUFFER_LENGTH];
 

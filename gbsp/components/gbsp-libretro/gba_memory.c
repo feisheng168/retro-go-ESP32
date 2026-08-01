@@ -2305,11 +2305,7 @@ void init_gamepak_buffer(void)
   gamepak_buffer_count = 0;
   while (gamepak_buffer_count < ROM_BUFFER_SIZE)
   {
-#ifdef ESP_PLATFORM
-    void *ptr = gpsp_malloc(gamepak_buffer_blocksize);
-#else
     void *ptr = malloc(gamepak_buffer_blocksize);
-#endif
     if (!ptr)
       break;
     gamepak_buffers[gamepak_buffer_count++] = (u8*)ptr;
