@@ -7,6 +7,9 @@
 			"path": "fmsx"
 		},
 		{
+			"path": "gbsp"
+		},
+		{
 			"path": "gwenesis"
 		},
 		{
@@ -16,6 +19,9 @@
 			"path": "prboom-go"
 		},
 		{
+			"path": "snes9x"
+		},
+		{
 			"path": "retro-core"
 		},
 		{
@@ -23,6 +29,9 @@
 		},
 		{
 			"path": "tools"
+		},
+		{
+			"path": "updater"
 		},
 		{
 			"path": ".",

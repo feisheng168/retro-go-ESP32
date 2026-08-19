@@ -1,3 +1,50 @@
+# Warning : This is an experimental fork of the [original repo](https://github.com/ducalex/retro-go)
+
+This fork merged the custom dynarec found in [this repo](https://github.com/Irak4t0n/HowBoyAdvance).
+
+## Warning 2 : This is only for ESP32 with dual RISC-V cores (such as the ESP32-P4)
+
+With the help of AI I optimized the code a little (5% lower CPU usage on average) by :
+- Putting more things in IRAM such as memory_map, iwram, palette, IO regs
+- Allocating more stack size : 8KB to 16 KB (8KB was not enough for some titles)
+- Implemented fast read path in the dynarec (this one is from the AI)
+- solving a few bugs in the dynarec (AI)
+- dropped the GBA sampling rate from 64 KHz to 32 KHz (just like every other retro-go app)
+
+I also theses for easier debugging : 
+- speed statistics over COM port
+- max frameskip option for the GBA emulator -> useful because frameskip doesn't help much in 3D intensive games
+
+
+This new dynarec is significantly faster thanks to dynamic recompilation. On average, it is 4–13× faster than the previous interpreter. Here are some comparisons:
+- Need for Speed: Underground 2: from 33% speed, 100% CPU usage, 4 FPS → 98% speed, 99% CPU usage, 30 FPS = 14× faster
+- Pokémon Fire Red: from 75% speed, 100% CPU usage, 7 FPS → 100% speed, 52% CPU usage, 30 FPS = 4× faster
+- Mario Kart: Super Circuit: from 75% speed, 100% CPU usage, 7 FPS → 100% speed, 75% CPU usage, 30 FPS = 4× faster
+
+comparison video for need for speed (the most impressive improvement) : https://youtu.be/vgu8pBc0Atg
+
+## Here are the numbers for the games I tested :
+
+| Game                                      | Region |     FPS     | CPU utilization |      Speed     | Notes |
+| ----------------------------------------- | :----: | :---------: | :-------------: | :------------: |:----- |
+| Advance wars 1                            |   EU   |     30+     |       98%       |      100%      |       |
+| Advance wars 2                            |   EU   |     30+     |       91%       |      100%      |       |
+| F-Zero - GP Legend                        |   EU   |     30+     |      90–97%     |      100%      |       |
+| F-Zero - Maximum Velocity                 |   EU   |     30+     |       86%       |      100%      |       |
+| Driv3r                                    |   EU   |      40     |      73–80%     |      100%      | Very impressive! |
+| GTA Advance                               |   EU   | 30 (choppy) |      80–98%     |      ~100%     | looks very choppy |
+| Kirby & the Amazing Mirror                |   EU   |      45     |       75%       |      100%      |       |
+| Zelda: The Minish Cap                     |   EU   |   45 (30*)  |    72% (59%*)   |      100%      |       |
+| Mario Kart: Super Circuit                 |   EU   |      30     |       74%       |      100%      |       |
+| Need for Speed: Underground 2             |   EU   |   20 (30*)  |       98%       | 96–100% (93%*) |       |
+| Need for Speed: Carbon                    |   EU   |      6      |       99%       |       56%      |       |
+| Pokémon Sapphire                          |   FR   |     30+     |       49%       |      100%      |       |
+| Pokémon FireRed                           |   FR   |     30+     |      58–62%     |      100%      |       |
+| Super Mario Advance 2 (Super Mario World) |   EU   |      30     |       66%       |      100%      | Some characters are glitched |
+| Taxi 3                                    |   FR   |      30     |      92–97%     |      100%      | Weird graphical glitches -> needs to be solved |
+
+> note : this was tested on a V1.0 ESP32-P4 at 360 MHz.
+
 # Table of contents
 - [Description](#description)
 - [Installation](#installation)

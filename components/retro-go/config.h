@@ -1,37 +1,39 @@
-#if defined(RG_TARGET_ODROID_GO)
-#include "targets/odroid-go/config.h"
-#elif defined(RG_TARGET_MRGC_G32)
-#include "targets/mrgc-g32/config.h"
-#elif defined(RG_TARGET_QTPY_GAMER)
-#include "targets/qtpy-gamer/config.h"
-#elif defined(RG_TARGET_RETRO_ESP32)
-#include "targets/retro-esp32/config.h"
-#elif defined(RG_TARGET_RETRO_RULER_V1)
-#include "targets/retro-ruler-V1/config.h"
-#elif defined(RG_TARGET_SDL2)
-#include "targets/sdl2/config.h"
-#elif defined(RG_TARGET_MRGC_GBM)
-#include "targets/mrgc-gbm/config.h"
-#elif defined(RG_TARGET_ESPLAY_MICRO)
-#include "targets/esplay-micro/config.h"
-#elif defined(RG_TARGET_ESPLAY_S3)
-#include "targets/esplay-s3/config.h"
-#elif defined(RG_TARGET_ESP32S3_DEVKIT_C)
-#include "targets/esp32s3-devkit-c/config.h"
-#elif defined(RG_TARGET_FRI3D_2024)
-#include "targets/fri3d-2024/config.h"
+#if defined(RG_TARGET_BRUTZELBOY)
+#include "targets/brutzelboy/config.h"
 #elif defined(RG_TARGET_BYTEBOI_REV1)
 #include "targets/byteboi-rev1/config.h"
-#elif defined(RG_TARGET_RACHEL_ESP32)
-#include "targets/rachel-esp32/config.h"
-#elif defined(RG_TARGET_NULLNANO)
-#include "targets/nullnano/config.h"
-#elif defined(RG_TARGET_T_DECK_PLUS)
-#include "targets/t-deck-plus/config.h"
-#elif defined(RG_TARGET_VMU)
-#include "targets/vmu/config.h"
 #elif defined(RG_TARGET_CROKPOCKET)
 #include "targets/crokpocket/config.h"
+#elif defined(RG_TARGET_ESP32_S3_DEVKIT)
+#include "targets/esp32-s3-devkit/config.h"
+#elif defined(RG_TARGET_ESP32_P4_DEVKIT)
+#include "targets/esp32-p4-devkit/config.h"
+#elif defined(RG_TARGET_ESPLAY_MICRO)
+#include "targets/esplay-micro/config.h"
+#elif defined(RG_TARGET_FRI3D_2024)
+#include "targets/fri3d-2024/config.h"
+#elif defined(RG_TARGET_MRGC_G32)
+#include "targets/mrgc-g32/config.h"
+#elif defined(RG_TARGET_MRGC_GBM)
+#include "targets/mrgc-gbm/config.h"
+#elif defined(RG_TARGET_NULLNANO)
+#include "targets/nullnano/config.h"
+#elif defined(RG_TARGET_ODROID_GO)
+#include "targets/odroid-go/config.h"
+#elif defined(RG_TARGET_RACHEL_ESP32)
+#include "targets/rachel-esp32/config.h"
+#elif defined(RG_TARGET_REDROID_GO)
+#include "targets/redroid-go/config.h"
+#elif defined(RG_TARGET_RETRO_ESP32)
+#include "targets/retro-esp32/config.h"
+#elif defined(RG_TARGET_RETRO_RULER)
+#include "targets/retro-ruler/config.h"
+#elif defined(RG_TARGET_SDL2)
+#include "targets/sdl2/config.h"
+#elif defined(RG_TARGET_T_DECK_PLUS)
+#include "targets/t-deck-plus/config.h"
+#elif defined(RG_TARGET_VMU_S3)
+#include "targets/vmu-s3/config.h"
 #else
 #warning "No target defined. Defaulting to ODROID-GO."
 #include "targets/odroid-go/config.h"
@@ -88,9 +90,12 @@
 #define RG_UPDATER_ENABLE 1
 #endif
 
-// If either of the following isn't defined then the updater will only perform version *checks*, not self-update
+// If RG_UPDATER_APPLICATION is not defined then the updater only performs version *checks*, not self-update
 // #define RG_UPDATER_APPLICATION       RG_APP_FACTORY
-// #define RG_UPDATER_DOWNLOAD_LOCATION RG_STORAGE_ROOT "/odroid/firmware"
+
+#ifndef RG_UPDATER_DOWNLOAD_LOCATION
+#define RG_UPDATER_DOWNLOAD_LOCATION RG_STORAGE_ROOT "/retro-go/updates"
+#endif
 
 #ifndef RG_UPDATER_GITHUB_RELEASES
 #define RG_UPDATER_GITHUB_RELEASES "https://api.github.com/repos/ducalex/retro-go/releases?per_page=10"
@@ -161,4 +166,12 @@
 
 #ifndef RG_SCREEN_VISIBLE_AREA
 #define RG_SCREEN_VISIBLE_AREA {0, 0, 0, 0}
+#endif
+
+#ifndef RG_LANG_DEFAULT
+#define RG_LANG_DEFAULT RG_LANG_EN
+#endif
+
+#ifndef RG_FONT_DEFAULT
+#define RG_FONT_DEFAULT RG_FONT_VERA_11
 #endif

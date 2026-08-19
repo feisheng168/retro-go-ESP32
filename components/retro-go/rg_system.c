@@ -53,6 +53,7 @@ struct rg_task_s
     void (*func)(void *arg);
     void *arg;
     // bool blocked;
+    size_t queueDepth;
 #ifdef ESP_PLATFORM
     QueueHandle_t queue;
     TaskHandle_t handle;
@@ -87,6 +88,7 @@ static RTC_NOINIT_ATTR panic_trace_t panicTrace;
 static RTC_NOINIT_ATTR time_t rtcValue;
 static bool panicTraceCleared = false;
 static bool exitCalled = false;
+static int overclockLevel, overclockMhz;
 static uint32_t indicators;
 static rg_color_t ledColor = -1;
 static rg_stats_t statistics;
@@ -95,6 +97,7 @@ static rg_task_t tasks[8];
 
 static const char *SETTING_BOOT_NAME = "BootName";
 static const char *SETTING_BOOT_ARGS = "BootArgs";
+static const char *SETTING_BOOT_SLOT = "BootSlot";
 static const char *SETTING_BOOT_FLAGS = "BootFlags";
 static const char *SETTING_TIMEZONE = "Timezone";
 static const char *SETTING_INDICATOR_MASK = "Indicators";
@@ -123,12 +126,13 @@ IRAM_ATTR void esp_panic_putchar_hook(char c)
     logbuf_putc(&panicTrace, c);
 }
 
-static bool update_boot_config(const char *partition, const char *name, const char *args, uint32_t flags)
+static bool update_boot_config(const char *partition, const char *name, const char *args, int save_slot, uint32_t flags)
 {
     if (app.initialized)
     {
         rg_settings_set_string(NS_BOOT, SETTING_BOOT_NAME, name);
         rg_settings_set_string(NS_BOOT, SETTING_BOOT_ARGS, args);
+        rg_settings_set_number(NS_BOOT, SETTING_BOOT_SLOT, save_slot);
         rg_settings_set_number(NS_BOOT, SETTING_BOOT_FLAGS, flags);
         rg_settings_commit();
     }
@@ -159,19 +163,23 @@ static void update_memory_statistics(void)
 #ifdef ESP_PLATFORM
     multi_heap_info_t heap_info;
     heap_caps_get_info(&heap_info, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    statistics.totalMemoryInt = heap_info.total_free_bytes + heap_info.total_allocated_bytes;
     statistics.freeMemoryInt = heap_info.total_free_bytes;
     statistics.freeBlockInt = heap_info.largest_free_block;
-    statistics.totalMemoryInt = heap_info.total_free_bytes + heap_info.total_allocated_bytes;
     heap_caps_get_info(&heap_info, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    statistics.totalMemoryExt = heap_info.total_free_bytes + heap_info.total_allocated_bytes;
     statistics.freeMemoryExt = heap_info.total_free_bytes;
     statistics.freeBlockExt = heap_info.largest_free_block;
-    statistics.totalMemoryExt = heap_info.total_free_bytes + heap_info.total_allocated_bytes;
-
-    statistics.freeStackMain = uxTaskGetStackHighWaterMark(tasks[0].handle);
+    for (size_t i = 0; i < RG_COUNT(tasks); ++i)
+        statistics.freeStack[i] = tasks[i].handle ? uxTaskGetStackHighWaterMark(tasks[i].handle) : -1;
 #else
-    statistics.freeMemoryInt = statistics.freeBlockInt = statistics.totalMemoryInt = (1 << 28);
-    statistics.freeMemoryExt = statistics.freeBlockExt = statistics.totalMemoryExt = (1 << 28);
+    statistics.freeMemoryInt = statistics.freeBlockInt = statistics.totalMemoryInt = 0x40000000;
+    for (size_t i = 0; i < RG_COUNT(tasks); ++i)
+        statistics.freeStack[i] = 0xFFFF;
 #endif
+    statistics.totalMemory = statistics.totalMemoryInt + statistics.totalMemoryExt;
+    statistics.freeMemory = statistics.freeMemoryInt + statistics.freeMemoryExt;
+    statistics.freeBlock = RG_MAX(statistics.freeBlockInt, statistics.freeBlockExt);
 }
 
 static void update_statistics(void)
@@ -196,8 +204,9 @@ static void update_statistics(void)
 
     if (counters.ticks && previous.ticks)
     {
+        const float usPerSecond = 1000000.f * (overclockMhz ? overclockMhz / 240.f : 1.f);
         float totalTime = counters.updateTime - previous.updateTime;
-        float totalTimeSecs = totalTime / 1000000.f;
+        float totalTimeSecs = totalTime / usPerSecond;
         float busyTime = counters.busyTime - previous.busyTime;
         float ticks = counters.ticks - previous.ticks;
         float fullFrames = counters.fullFrames - previous.fullFrames;
@@ -207,39 +216,38 @@ static void update_statistics(void)
         // Hard to fix this sync issue without a lock, which I don't want to use...
         ticks = RG_MAX(ticks, frames);
 
-        statistics.busyPercent = busyTime / totalTime * 100.f;
         statistics.totalFPS = ticks / totalTimeSecs;
         statistics.skippedFPS = (ticks - frames) / totalTimeSecs;
         statistics.fullFPS = fullFrames / totalTimeSecs;
         statistics.partialFPS = partFrames / totalTimeSecs;
+        statistics.busyPercent = busyTime / totalTime * 100.f;
+        statistics.speedPercent = app.tickRate > 0 ? (statistics.totalFPS / app.tickRate * 100.f) : 100.f;
     }
     statistics.uptime = rg_system_timer() / 1000000;
 
     update_memory_statistics();
 }
 
-static void update_indicators(void)
+static void update_indicators(bool reset_animation)
 {
     uint32_t visibleIndicators = indicators & app.indicatorsMask;
+    static int animation_step = 0;
     rg_color_t newColor = 0; // C_GREEN
+
+    if (reset_animation)
+        animation_step = 0;
+    else
+        animation_step++;
 
     if (indicators & (3 << RG_INDICATOR_CRITICAL))
         newColor = C_RED; // Make it flash rapidly!
     else if (visibleIndicators & (1 << RG_INDICATOR_POWER_LOW))
-        newColor = C_RED;
+        newColor = (animation_step & 1) ? C_NONE : C_RED;
     else if (visibleIndicators)
         newColor = C_BLUE;
 
-    // In some cases it can be costly to update the LED status, skip if unchanged
-    if (newColor == ledColor)
-        return;
-
-#if defined(ESP_PLATFORM) && defined(RG_GPIO_LED)
-    // GPIO LED doesn't support colors, so any color = on
-    if (RG_GPIO_LED != GPIO_NUM_NC)
-        gpio_set_level(RG_GPIO_LED, newColor != 0);
-#endif
-    ledColor = newColor;
+    if (newColor != ledColor)
+        rg_system_set_led_color(newColor);
 }
 
 static void system_monitor_task(void *arg)
@@ -255,16 +263,14 @@ static void system_monitor_task(void *arg)
         rtcValue = time(NULL);
 
         update_statistics();
-        // update_indicators(); // Implicitly called by rg_system_set_indicator below
 
         rg_battery_t battery = rg_input_read_battery();
-        // TODO: The flashing should eventually be handled by update_indicators instead of here...
-        rg_system_set_indicator(RG_INDICATOR_POWER_LOW, (battery.present && battery.level <= 2.f &&
-                                                           !rg_system_get_indicator(RG_INDICATOR_POWER_LOW)));
+        rg_system_set_indicator(RG_INDICATOR_POWER_LOW, (battery.present && battery.level <= 2.f));
+        update_indicators(false);
 
         // Try to avoid complex conversions that could allocate, prefer rounding/ceiling if necessary.
-        rg_system_log(RG_LOG_DEBUG, NULL, "STACK:%d, HEAP:%d+%d (%d+%d), BUSY:%d%%, FPS:%d (%d+%d+%d), BATT:%d\n",
-            statistics.freeStackMain,
+        rg_system_log(RG_LOG_DEBUG, NULL, "STACK:%d, HEAP:%d+%d (%d+%d), BUSY:%d%%, FPS:%d (S:%d R:%d+%d), SPEED:%d%%, BATT:%d",
+            statistics.freeStack[0],
             statistics.freeMemoryInt / 1024,
             statistics.freeMemoryExt / 1024,
             statistics.freeBlockInt / 1024,
@@ -274,12 +280,22 @@ static void system_monitor_task(void *arg)
             (int)roundf(statistics.skippedFPS),
             (int)roundf(statistics.partialFPS),
             (int)roundf(statistics.fullFPS),
+            (int)roundf(statistics.speedPercent),
             (int)roundf((battery.volts * 1000) ?: battery.level));
 
-        // Auto frameskip
-        if (statistics.ticks > app.tickRate * 2)
+        for (size_t i = 0; i < RG_COUNT(tasks); ++i)
         {
-            float speed = ((float)statistics.totalFPS / app.tickRate) * 100.f / app.speed;
+            if (tasks[i].handle && statistics.freeStack[i] >= 0 && statistics.freeStack[i] < 300)
+                RG_LOGW("Task %.15s HWM = %d", tasks[i].name, statistics.freeStack[i]);
+            // if (tasks[i].handle && statistics.freeStack[i] >= 0)
+            //     rg_system_log(statistics.freeStack[i] < 1024 ? RG_LOG_WARN : RG_LOG_DEBUG, NULL, "Stack HWM: %s = %d", tasks[i].name, statistics.freeStack[i]);
+        }
+
+        // Auto frameskip
+        // TODO: Use a rolling average of frameTimes instead of this mess
+        if (app.tickRate > 0 && statistics.ticks > app.tickRate * 2 && app.frameskip > -1) // -1 disables auto frameskip
+        {
+            float speed = statistics.speedPercent / app.speed;
             // We don't fully go back to 0 frameskip because if we dip below 95% once, we're clearly
             // borderline in power and going back to 0 is just asking for stuttering...
             if (speed > 99.f && statistics.busyPercent < 85.f && app.frameskip > 1)
@@ -342,7 +358,7 @@ static void enter_recovery_mode(void)
             rg_storage_delete(RG_BASE_PATH_CACHE);
             break;
         case 1:
-            rg_system_switch_app(RG_APP_FACTORY, 0, 0, 0);
+            rg_system_switch_app(RG_APP_FACTORY, NULL, NULL, 0, 0);
         case 2:
         default:
             rg_system_exit();
@@ -359,6 +375,16 @@ static void platform_init(void)
         gpio_reset_pin(GPIO_NUM_13);
         gpio_reset_pin(GPIO_NUM_14);
         gpio_reset_pin(GPIO_NUM_15);
+    #endif
+    // Setup all SPI CS lines here in case we have a shared bus. A floating device could cause
+    // problems during the initialization of the first peripherals...
+    #if defined(RG_SCREEN_HOST) && defined(RG_GPIO_LCD_CS)
+        gpio_set_direction(RG_GPIO_LCD_CS, GPIO_MODE_OUTPUT);
+        gpio_set_level(RG_GPIO_LCD_CS, 1);
+    #endif
+    #if defined(RG_STORAGE_SDSPI_HOST) && defined(RG_GPIO_SDSPI_CS)
+        gpio_set_direction(RG_GPIO_SDSPI_CS, GPIO_MODE_OUTPUT);
+        gpio_set_level(RG_GPIO_SDSPI_CS, 1);
     #endif
     #ifdef RG_GPIO_LED
         gpio_set_direction(RG_GPIO_LED, GPIO_MODE_OUTPUT);
@@ -378,20 +404,7 @@ static void platform_init(void)
 #endif
 }
 
-rg_app_t *rg_system_reinit(int sampleRate, const rg_handlers_t *handlers, void *_unused)
-{
-    if (!app.initialized)
-        return rg_system_init(sampleRate, handlers, NULL);
-
-    app.sampleRate = sampleRate;
-    if (handlers)
-        app.handlers = *handlers;
-    rg_audio_set_sample_rate(app.sampleRate);
-
-    return &app;
-}
-
-rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_unused)
+rg_app_t *rg_system_init(const rg_config_t *config)
 {
     RG_ASSERT(app.initialized == false, "rg_system_init() was already called.");
     bool enterRecoveryMode = false;
@@ -407,13 +420,11 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
         .bootFlags = 0,
         .indicatorsMask = (1 << RG_INDICATOR_POWER_LOW),
         .speed = 1.f,
-        .sampleRate = sampleRate,
+        .sampleRate = 0,
         .tickRate = 60,
+        .tickTimeout = 3000000,
         .frameTime = 1000000 / 60,
         .frameskip = 1, // This can be overriden on a per-app basis if needed, do not set 0 here!
-        .overclock = 0,
-        .tickTimeout = 3000000,
-        .lowMemoryMode = false,
         .enWatchdog = true,
         .isColdBoot = true,
         .isLauncher = false,
@@ -443,6 +454,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     printf("%s %s (%s)\n", app.name, app.version, app.buildDate);
     printf(" built for: %s. type: %s\n", RG_TARGET_NAME, app.isRelease ? "release" : "dev");
     printf("========================================================\n\n");
+    update_memory_statistics(); // Do this early in case any of our init routines needs to know
 
 #ifdef RG_I2C_GPIO_DRIVER
     rg_i2c_init();
@@ -464,6 +476,7 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     app.configNs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_NAME, app.configNs);
     app.bootArgs = rg_settings_get_string(NS_BOOT, SETTING_BOOT_ARGS, app.bootArgs);
     app.bootFlags = rg_settings_get_number(NS_BOOT, SETTING_BOOT_FLAGS, app.bootFlags);
+    app.saveSlot = rg_settings_get_number(NS_BOOT, SETTING_BOOT_SLOT, app.saveSlot);
     rg_display_init();
     rg_gui_init();
 
@@ -490,43 +503,72 @@ rg_app_t *rg_system_init(int sampleRate, const rg_handlers_t *handlers, void *_u
     memset(&panicTrace, 0, sizeof(panicTrace));
     panicTraceCleared = true;
 
-    update_memory_statistics();
-    app.lowMemoryMode = statistics.totalMemoryExt == 0;
-
     app.indicatorsMask = rg_settings_get_number(NS_GLOBAL, SETTING_INDICATOR_MASK, app.indicatorsMask);
-    app.saveSlot = (app.bootFlags & RG_BOOT_SLOT_MASK) >> 4;
     app.romPath = app.bootArgs ?: ""; // For whatever reason some of our code isn't NULL-aware, sigh..
 
     rg_gui_draw_hourglass();
-    rg_audio_init(sampleRate);
 
+    if (config)
+    {
+        if (config->storageRequired && !rg_storage_ready())
+        {
+            rg_display_clear(C_SKY_BLUE);
+            rg_gui_alert(_("SD Card Error"), _("Storage mount failed.\nMake sure the card is FAT32."));
+            rg_system_exit();
+        }
+        if (config->romRequired && !app.romPath && !*app.romPath)
+        {
+            // show rom picking dialog
+            // app.romPath = rg_gui_file_picker(_("Choose ROM"), RG_BASE_PATH_ROMS, NULL, true, false);
+        }
+        #ifdef ESP_PLATFORM
+        if (config->mallocAlwaysInternal > 0)
+            heap_caps_malloc_extmem_enable(config->mallocAlwaysInternal);
+        #endif
+        app.sampleRate = config->sampleRate;
+        app.tickRate = config->frameRate;
+        // app.frameskip = config->frameSkip;
+        app.isLauncher = config->isLauncher;
+        app.handlers = config->handlers;
+    }
+
+    if (app.sampleRate > 0)
+        rg_audio_init(app.sampleRate);
+
+    rg_system_set_tick_rate(app.tickRate);
     rg_system_set_timezone(rg_settings_get_string(NS_GLOBAL, SETTING_TIMEZONE, "EST+5"));
     rg_system_load_time();
 
-    // Do these last to not interfere with panic handling above
-    if (handlers)
-        app.handlers = *handlers;
+    if (app.bootFlags & RG_BOOT_ONCE)
+        update_boot_config(RG_APP_LAUNCHER, NULL, NULL, 0, 0);
+
+    if (statistics.totalMemory < 0x200000)
+        rg_gui_alert("External memory not detected", "Boot will continue but it will surely crash...");
+
+    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, 1, RG_TASK_PRIORITY_5, -1);
+    app.initialized = true;
 
 #ifdef RG_ENABLE_PROFILING
-    RG_LOGI("Profiling has been enabled at compile time!\n");
+    RG_LOGI("Profiling has been enabled at compile time!");
     profile = rg_alloc(sizeof(*profile), MEM_SLOW);
     profile->lock = rg_mutex_create();
 #endif
-
-    if (app.lowMemoryMode)
-        rg_gui_alert("External memory not detected", "Boot will continue but it will surely crash...");
-
-    if (app.bootFlags & RG_BOOT_ONCE)
-        update_boot_config(RG_APP_LAUNCHER, NULL, NULL, 0);
-
-    rg_task_create("rg_sysmon", &system_monitor_task, NULL, 3 * 1024, RG_TASK_PRIORITY_5, -1);
-    app.initialized = true;
 
     update_memory_statistics();
     RG_LOGI("Available memory: %d/%d + %d/%d", statistics.freeMemoryInt / 1024, statistics.totalMemoryInt / 1024,
             statistics.freeMemoryExt / 1024, statistics.totalMemoryExt / 1024);
     RG_LOGI("Retro-Go ready.\n\n");
 
+    return &app;
+}
+
+rg_app_t *rg_system_reinit(int sampleRate, const rg_handlers_t *handlers, void *_unused)
+{
+    RG_ASSERT(app.initialized, "App not initialized");
+    rg_audio_set_sample_rate(app.sampleRate);
+    app.sampleRate = sampleRate;
+    if (handlers)
+        app.handlers = *handlers;
     return &app;
 }
 
@@ -537,7 +579,7 @@ static void task_wrapper(void *arg)
 {
     rg_task_t *task = arg;
     task->handle = xTaskGetCurrentTaskHandle();
-    task->queue = xQueueCreate(1, sizeof(rg_task_msg_t));
+    task->queue = xQueueCreate(task->queueDepth, sizeof(rg_task_msg_t));
     (task->func)(task->arg);
     vQueueDelete(task->queue);
     memset(task, 0, sizeof(rg_task_t));
@@ -554,7 +596,8 @@ static int task_wrapper(void *arg)
 }
 #endif
 
-rg_task_t *rg_task_create(const char *name, void (*taskFunc)(void *arg), void *arg, size_t stackSize, int priority, int affinity)
+rg_task_t *rg_task_create(const char *name, void (*taskFunc)(void *arg), void *arg, size_t stackSize,
+                          size_t queueDepth, int priority, int affinity)
 {
     RG_ASSERT_ARG(name && taskFunc);
     rg_task_t *task = NULL;
@@ -570,7 +613,7 @@ rg_task_t *rg_task_create(const char *name, void (*taskFunc)(void *arg), void *a
 
     task->func = taskFunc;
     task->arg = arg;
-    task->handle = 0;
+    task->queueDepth = RG_MAX(1, queueDepth);
     strncpy(task->name, name, 15);
 
 #if defined(ESP_PLATFORM)
@@ -618,11 +661,12 @@ rg_task_t *rg_task_current(void)
     return NULL;
 }
 
-bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg)
+bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg, int timeoutMS)
 {
     RG_ASSERT_ARG(task && msg);
 #if defined(ESP_PLATFORM)
-    return xQueueSend(task->queue, msg, portMAX_DELAY) == pdTRUE;
+    TickType_t timeout = timeoutMS < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMS);
+    return xQueueSend(task->queue, msg, timeout) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting > 0)
         continue;
@@ -632,7 +676,7 @@ bool rg_task_send(rg_task_t *task, const rg_task_msg_t *msg)
 #endif
 }
 
-bool rg_task_peek(rg_task_msg_t *out)
+bool rg_task_peek(rg_task_msg_t *out, int timeoutMS)
 {
     rg_task_t *task = rg_task_current();
     bool success = false;
@@ -640,7 +684,8 @@ bool rg_task_peek(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
-    success = xQueuePeek(task->queue, out, portMAX_DELAY) == pdTRUE;
+    TickType_t timeout = timeoutMS < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMS);
+    success = xQueuePeek(task->queue, out, timeout) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
         continue;
@@ -650,7 +695,7 @@ bool rg_task_peek(rg_task_msg_t *out)
     return success;
 }
 
-bool rg_task_receive(rg_task_msg_t *out)
+bool rg_task_receive(rg_task_msg_t *out, int timeoutMS)
 {
     rg_task_t *task = rg_task_current();
     bool success = false;
@@ -658,7 +703,8 @@ bool rg_task_receive(rg_task_msg_t *out)
         return false;
     // task->blocked = true;
 #if defined(ESP_PLATFORM)
-    success = xQueueReceive(task->queue, out, portMAX_DELAY) == pdTRUE;
+    TickType_t timeout = timeoutMS < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMS);
+    success = xQueueReceive(task->queue, out, timeout) == pdTRUE;
 #elif defined(RG_TARGET_SDL2)
     while (task->msgWaiting < 1)
         continue;
@@ -736,7 +782,7 @@ bool rg_mutex_take(rg_mutex_t *mutex, int timeoutMS)
 {
     RG_ASSERT_ARG(mutex);
 #if defined(ESP_PLATFORM)
-    int timeout = timeoutMS >= 0 ? pdMS_TO_TICKS(timeoutMS) : portMAX_DELAY;
+    TickType_t timeout = timeoutMS < 0 ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMS);
     return xSemaphoreTake((QueueHandle_t)mutex, timeout) == pdPASS;
 #elif defined(RG_TARGET_SDL2)
     return SDL_LockMutex((SDL_mutex *)mutex) == 0;
@@ -802,7 +848,7 @@ rg_app_t *rg_system_get_app(void)
     return &app;
 }
 
-rg_stats_t rg_system_get_counters(void)
+rg_stats_t rg_system_get_stats(void)
 {
     return statistics;
 }
@@ -810,7 +856,10 @@ rg_stats_t rg_system_get_counters(void)
 void rg_system_set_tick_rate(int tickRate)
 {
     app.tickRate = tickRate;
-    app.frameTime = 1000000 / (app.tickRate * app.speed);
+    if (tickRate > 0)
+        app.frameTime = 1000000 / (app.tickRate * app.speed);
+    else
+        app.frameTime = 1000000;
 }
 
 int rg_system_get_tick_rate(void)
@@ -837,7 +886,8 @@ IRAM_ATTR int64_t rg_system_timer(void)
 
 void rg_system_event(int event, void *arg)
 {
-    RG_LOGV("Dispatching event:%d arg:%p\n", event, arg);
+    // FIXME: rg_* components should have a way to listen to events too (eg rg_gui receive RG_EVENT_GEOMETRY)
+    RG_LOGV("Dispatching event:%d arg:%p", event, arg);
     if (app.handlers.event)
         app.handlers.event(event, arg);
 }
@@ -896,14 +946,14 @@ void rg_system_restart(void)
 void rg_system_exit(void)
 {
     RG_LOGW("Exiting application!");
-    rg_system_switch_app(RG_APP_LAUNCHER, 0, 0, 0);
+    rg_system_switch_app(RG_APP_LAUNCHER, NULL, NULL, 0, 0);
 }
 
-void rg_system_switch_app(const char *partition, const char *name, const char *args, uint32_t flags)
+void rg_system_switch_app(const char *partition, const char *name, const char *args, int save_slot, uint32_t flags)
 {
     RG_LOGI("Switching to app %s (%s)", partition ?: "-", name ?: "-");
 
-    if (update_boot_config(partition, name, args, flags))
+    if (update_boot_config(partition, name, args, save_slot, flags))
         rg_system_restart();
 
     RG_PANIC("Failed to switch app!");
@@ -1013,7 +1063,8 @@ bool rg_system_save_trace(const char *filename, bool panic_trace)
     fprintf(fp, "Total memory: %d + %d\n", stats->totalMemoryInt, stats->totalMemoryExt);
     fprintf(fp, "Free memory: %d + %d\n", stats->freeMemoryInt, stats->freeMemoryExt);
     fprintf(fp, "Free block: %d + %d\n", stats->freeBlockInt, stats->freeBlockExt);
-    fprintf(fp, "Stack HWM: %d\n", stats->freeStackMain);
+    for (int i = 0; i < RG_COUNT(stats->freeStack); ++i)
+        fprintf(fp, "Task %d HWM: %d\n", i, stats->freeStack[i]);
     fprintf(fp, "Uptime: %ds (%d ticks)\n", stats->uptime, stats->ticks);
     if (panic_trace && panicTrace.configNs[0])
         fprintf(fp, "Panic configNs: %.16s\n", panicTrace.configNs);
@@ -1036,9 +1087,11 @@ bool rg_system_save_trace(const char *filename, bool panic_trace)
 
 void rg_system_set_indicator(rg_indicator_t indicator, bool on)
 {
+    uint32_t old_indicators = indicators;
     indicators &= ~(1 << indicator);
     indicators |= (on << indicator);
-    update_indicators();
+    if (old_indicators != indicators)
+        update_indicators(true);
 }
 
 bool rg_system_get_indicator(rg_indicator_t indicator)
@@ -1058,6 +1111,25 @@ bool rg_system_get_indicator_mask(rg_indicator_t indicator)
     return app.indicatorsMask & (1 << indicator);
 }
 
+bool rg_system_set_led_color(rg_color_t color)
+{
+    ledColor = color;
+#if defined(RG_GPIO_LED)
+    int value = color > 0; // GPIO LED doesn't support colors, so any color = on
+    #if defined(RG_GPIO_LED_INVERT)
+    value = !value;
+    #endif
+    if (RG_GPIO_LED != GPIO_NUM_NC)
+        return gpio_set_level(RG_GPIO_LED, value) == ESP_OK;
+#endif
+    return true;
+}
+
+rg_color_t rg_system_get_led_color(void)
+{
+    return ledColor;
+}
+
 void rg_system_set_log_level(rg_log_level_t level)
 {
     if (level >= 0 && level < RG_LOG_MAX)
@@ -1071,94 +1143,105 @@ int rg_system_get_log_level(void)
     return app.logLevel;
 }
 
+void rg_system_set_app_speed(float speed)
+{
+    float newSpeed = RG_MIN(2.5f, RG_MAX(0.5f, speed));
+    if (newSpeed == app.speed)
+        return;
+    // FIXME: We need to store the actual default frameskip so we can return to it...
+    app.frameskip = (newSpeed - 0.5f) * 3;
+    app.frameTime = 1000000.f / (app.tickRate * newSpeed);
+    app.speed = newSpeed;
+    // There's a bug in esp-idf v4.4.8 where many frequencies play at the wrong speed.
+    // Still trying to find how to work around that...
+    rg_audio_set_sample_rate(app.sampleRate * newSpeed);
+    rg_system_event(RG_EVENT_SPEEDUP, NULL);
+}
+
+float rg_system_get_app_speed(void)
+{
+    return app.speed;
+}
+
 void rg_system_set_overclock(int level)
 {
-#if defined(ESP_PLATFORM) && CONFIG_IDF_TARGET_ESP32
-    // None of this is documented by espressif but can be found in the file rtc_clk.c
-    #define I2C_BBPLL                   0x66
-    #define I2C_BBPLL_ENDIV5              11
-    #define I2C_BBPLL_BBADC_DSMP           9
-    #define I2C_BBPLL_HOSTID               4
-    #define I2C_BBPLL_OC_LREF              2
-    #define I2C_BBPLL_OC_DIV_7_0           3
-    #define I2C_BBPLL_OC_DCUR              5
-    #define BBPLL_ENDIV5_VAL_320M       0x43
-    #define BBPLL_BBADC_DSMP_VAL_320M   0x84
-    #define BBPLL_ENDIV5_VAL_480M       0xc3
-    #define BBPLL_BBADC_DSMP_VAL_480M   0x74
+#if CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32S3
+    // None of this is documented by espressif but there are comments to be found in the file `rtc_clk.c` and `clk_tree_ll.h`
     extern void rom_i2c_writeReg(uint8_t block, uint8_t host_id, uint8_t reg_add, uint8_t data);
     extern uint8_t rom_i2c_readReg(uint8_t block, uint8_t host_id, uint8_t reg_add);
-
-    uint8_t div_ref = 0;
-    uint8_t div7_0 = (level + 4) * 8;
-    uint8_t div10_8 = 0;
-    uint8_t lref = 0;
-    uint8_t dcur = 6;
-    uint8_t bw = 3;
-    uint8_t ENDIV5 = BBPLL_ENDIV5_VAL_480M;
-    uint8_t BBADC_DSMP = BBPLL_BBADC_DSMP_VAL_480M;
-    uint8_t BBADC_OC_LREF = (lref << 7) | (div10_8 << 4) | (div_ref);
-    uint8_t BBADC_OC_DIV_7_0 = div7_0;
-    uint8_t BBADC_OC_DCUR = (bw << 6) | dcur;
-
-    static uint8_t BASE_ENDIV5, BASE_BBADC_DSMP, BASE_BBADC_OC_LREF, BASE_BBADC_OC_DIV_7_0, BASE_BBADC_OC_DCUR, BASE_SAVED;
-    if (!BASE_SAVED)
+    extern int uart_set_baudrate(int uart_num, uint32_t baud_rate);
+    extern uint64_t esp_rtc_get_time_us(void);
+    extern unsigned xthal_get_ccount(void);
+    // #include "driver/uart.h"
+#if CONFIG_IDF_TARGET_ESP32
+    #define I2C_BBPLL                   0x66
+    #define I2C_BBPLL_HOSTID               4
+    #define I2C_BBPLL_OC_DIV_7_0           3    // This is the PLL divider to get the CPU clock (our main concern)
+    #define OC_MAX_LEVEL                   6
+    #define OC_MIN_LEVEL                  -5
+    #define OC_DIV7_MULTIPLIER             5
+#else // CONFIG_IDF_TARGET_ESP32S3
+    #define I2C_BBPLL                   0x66
+    #define I2C_BBPLL_HOSTID               1
+    #define I2C_BBPLL_OC_DIV_7_0           3
+    #define OC
+    #define OC_MAX_LEVEL                   8
+    #define OC_MIN_LEVEL                  -8
+    #define OC_DIV7_MULTIPLIER             1
+#endif
+    if (level < OC_MIN_LEVEL || level > OC_MAX_LEVEL)
     {
-        BASE_ENDIV5 = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_ENDIV5);
-        BASE_BBADC_DSMP = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_BBADC_DSMP);
-        BASE_BBADC_OC_LREF = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_LREF);
-        BASE_BBADC_OC_DIV_7_0 = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DIV_7_0);
-        BASE_BBADC_OC_DCUR = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DCUR);
-        BASE_SAVED = true;
-    }
-
-    if (level == 0)
-    {
-        ENDIV5 = BASE_ENDIV5;
-        BBADC_DSMP = BASE_BBADC_DSMP;
-        BBADC_OC_LREF = BASE_BBADC_OC_LREF;
-        BBADC_OC_DIV_7_0 = BASE_BBADC_OC_DIV_7_0;
-        BBADC_OC_DCUR = BASE_BBADC_OC_DCUR;
-    }
-    else if (level < -4 || level > 3)
-    {
-        RG_LOGW("Invalid level %d, min:-4 max:3", level);
+        RG_LOGW("Invalid level %d, min:%d max:%d", level, OC_MIN_LEVEL, OC_MAX_LEVEL);
         return;
     }
+    static int original_div7_0 = -1;
+    if (original_div7_0 == -1)
+        original_div7_0 = rom_i2c_readReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DIV_7_0);
+    uint8_t div7_0 = original_div7_0 + (level * OC_DIV7_MULTIPLIER);
+    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DIV_7_0, div7_0);
+    rg_task_delay(20);
 
-    RG_LOGW(" ");
-    RG_LOGW("BASE: %d %d %d %d %d", BASE_ENDIV5, BASE_BBADC_DSMP, BASE_BBADC_OC_LREF, BASE_BBADC_OC_DIV_7_0, BASE_BBADC_OC_DCUR);
-    RG_LOGW("NEW : %d %d %d %d %d", ENDIV5, BBADC_DSMP, BBADC_OC_LREF, BBADC_OC_DIV_7_0, BBADC_OC_DCUR);
-    RG_LOGW(" ");
+    // RTC clock isn't affected by the CPU or APB clocks, so it remains our only reliable time measurement
+    uint64_t t = esp_rtc_get_time_us(); // The - 10000 is to account for time wasted on mutexes
+    uint32_t cc = xthal_get_ccount(); // Obtain it *after* calling esp_rtc_get_time_us because it is slow
+    rg_usleep(100000);
+    int real_mhz = (double)(xthal_get_ccount() - cc) / (esp_rtc_get_time_us() - t);
+    // float factor = 240.f / real_mhz;
 
-    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_ENDIV5, ENDIV5);
-    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_BBADC_DSMP, BBADC_DSMP);
-    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_LREF, BBADC_OC_LREF);
-    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DIV_7_0, BBADC_OC_DIV_7_0);
-    rom_i2c_writeReg(I2C_BBPLL, I2C_BBPLL_HOSTID, I2C_BBPLL_OC_DCUR, BBADC_OC_DCUR);
-
-    RG_LOGW("Overclock applied!");
-#if 0
-    extern uint64_t esp_rtc_get_time_us(void);
-    uint64_t start = esp_rtc_get_time_us();
-    int64_t end = rg_system_timer() + 1000000;
-    while (rg_system_timer() < end)
-        continue;
-    overclock_ratio = 1000000.f / (esp_rtc_get_time_us() - start);
+#if CONFIG_IDF_TARGET_ESP32
+    // Most audio devices rely on either the APB or the CPU clocks, which we've just skewed. So we have to
+    // compensate. The external DAC uses the APLL which is an independant clock source, no need to correct.
+    if (strcmp(rg_audio_get_sink()->name, "Ext DAC") != 0)
+        rg_audio_set_sample_rate(app.sampleRate * (240.0 / real_mhz));
+    uart_set_baudrate(0, 115200.0 * (240.0 / real_mhz));
+    // esp_timer_impl_update_apb_freq(80.0 / 240.0 * real_mhz);
+    // ets_update_cpu_frequency(real_mhz);
 #endif
-    // overclock_ratio = (240 + (app.overclock * 40)) / 240.f;
 
-    // rg_audio_set_sample_rate(app.sampleRate / overclock_ratio);
+    app.frameskip = 1;
+
+    overclockLevel = level;
+    overclockMhz = real_mhz;
+
+    RG_LOGW("Overclock level %d applied: %dMhz", level, real_mhz);
 #else
     RG_LOGE("Overclock not supported on this platform!");
 #endif
-
-    app.overclock = level;
 }
 
 int rg_system_get_overclock(void)
 {
-    return app.overclock;
+    return overclockLevel;
+}
+
+int rg_system_get_cpu_speed(void)
+{
+    if (overclockMhz)
+        return overclockMhz;
+    #if CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ
+        return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+    #endif
+    return 0;
 }
 
 char *rg_emu_get_path(rg_path_type_t pathType, const char *filename)
@@ -1221,12 +1304,7 @@ static void emu_update_save_slot(uint8_t slot)
 
     // Set bootflags to resume from this state on next boot
     if ((app.bootFlags & RG_BOOT_ONCE) == 0)
-    {
-        app.bootFlags &= ~RG_BOOT_SLOT_MASK;
-        app.bootFlags |= app.saveSlot << 4;
-        app.bootFlags |= RG_BOOT_RESUME;
-        update_boot_config(NULL, app.configNs, app.bootArgs, app.bootFlags);
-    }
+        update_boot_config(NULL, app.configNs, app.bootArgs, app.saveSlot, app.bootFlags | RG_BOOT_RESUME);
 
     rg_storage_commit();
 }
@@ -1397,26 +1475,10 @@ rg_emu_states_t *rg_emu_get_states(const char *romPath, size_t slots)
 
 bool rg_emu_reset(bool hard)
 {
-    if (app.speed != 1.f)
-        rg_emu_set_speed(1.f);
+    rg_system_set_app_speed(1.f);
     if (app.handlers.reset)
         return app.handlers.reset(hard);
     return false;
-}
-
-void rg_emu_set_speed(float speed)
-{
-    app.speed = RG_MIN(2.5f, RG_MAX(0.5f, speed));
-    // FIXME: We need to store the actual default frameskip so we can return to it...
-    app.frameskip = (app.speed - 0.5f) * 3;
-    app.frameTime = 1000000.f / (app.tickRate * app.speed);
-    rg_audio_set_sample_rate(app.sampleRate * app.speed);
-    rg_system_event(RG_EVENT_SPEEDUP, NULL);
-}
-
-float rg_emu_get_speed(void)
-{
-    return app.speed;
 }
 
 #ifdef RG_ENABLE_PROFILING

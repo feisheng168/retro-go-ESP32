@@ -41,14 +41,16 @@
 #include <midifile.h>
 #include <oplplayer.h>
 #include <rg_system.h>
-#ifdef ESP_PLATFORM
-#include <esp_heap_caps.h>
-#endif
 
 #define AUDIO_SAMPLE_RATE 22050
-
 #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / TICRATE + 1)
 #define NUM_MIX_CHANNELS 8
+
+#if RG_SCREEN_PIXEL_FORMAT == 0
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_BE
+#else
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_LE
+#endif
 
 static rg_surface_t *update;
 static rg_app_t *app;
@@ -140,12 +142,15 @@ void I_UpdateNoBlit(void)
 void I_FinishUpdate(void)
 {
     rg_display_submit(update, 0);
-    rg_display_sync(true); // Wait for update->buffer to be released
 }
 
 bool I_StartDisplay(void)
 {
+    // Wait for the frame buffer to be released before we start drawing to it
+    while (rg_display_is_busy())
+        rg_task_yield();
     return true;
+    // return !rg_display_is_busy();
 }
 
 void I_EndDisplay(void)
@@ -157,7 +162,12 @@ void I_SetPalette(int pal)
 {
     uint16_t *palette = V_BuildPalette(pal, 16);
     for (int i = 0; i < 256; i++)
-        update->palette[i] = palette[i] << 8 | palette[i] >> 8;
+    {
+        uint16_t color = palette[i];
+        if (FB_PIXEL_FORMAT  == RG_PIXEL_PAL565_BE)
+            color = (color << 8) | (color >> 8);
+        update->palette[i] = color;
+    }
     Z_Free(palette);
     current_palette = pal;
 }
@@ -357,7 +367,7 @@ void I_InitSound(void)
     music_player->init(snd_samplerate);
     music_player->setvolume(snd_MusicVolume);
 
-    rg_task_create("doom_sound", &soundTask, NULL, 2048, RG_TASK_PRIORITY_2, 1);
+    rg_task_create("doom_sound", &soundTask, NULL, 2048, 1, RG_TASK_PRIORITY_2, 1);
 }
 
 void I_ShutdownSound(void)
@@ -439,7 +449,7 @@ void I_StartTic(void)
             Z_FreeTags(PU_CACHE, PU_CACHE); // At this point the heap is usually full. Let's reclaim some!
             rg_gui_game_menu();
         }
-        realtic_clock_rate = app->speed * 100;
+        realtic_clock_rate = rg_system_get_app_speed() * 100;
         R_InitInterpolation();
     }
     else
@@ -510,6 +520,11 @@ static void event_handler(int event, void *arg)
     {
         rg_display_submit(update, 0);
     }
+    else if (event == RG_EVENT_GEOMETRY)
+    {
+        // NOTE: Resolution can't be changed after D_DoomMain() has been called.
+        // The buffer will have to be scaled...
+    }
 }
 
 bool is_iwad(const char *path)
@@ -532,22 +547,30 @@ static void options_handler(rg_gui_option_t *dest)
 
 void app_main()
 {
-    const rg_handlers_t handlers = {
-        .loadState = &load_state_handler,
-        .saveState = &save_state_handler,
-        .reset = &reset_handler,
-        .screenshot = &screenshot_handler,
-        .event = &event_handler,
-        .options = &options_handler,
+    const rg_config_t config = {
+        .sampleRate = AUDIO_SAMPLE_RATE,
+        .frameRate = TICRATE,
+        .storageRequired = true,
+        .romRequired = false,
+        .handlers = {
+            .loadState = &load_state_handler,
+            .saveState = &save_state_handler,
+            .reset = &reset_handler,
+            .screenshot = &screenshot_handler,
+            .event = &event_handler,
+            .options = &options_handler,
+        },
+        // Some things might be nice to place in internal RAM, but I do not have time to find such
+        // structures. So for now, prefer external RAM for most things except the framebuffer which
+        // is allocated below.
+        .mallocAlwaysInternal = 1, // I want 0 but 0 will be ignored, so 1 it is!
     };
-
-    app = rg_system_init(AUDIO_SAMPLE_RATE, &handlers, NULL);
-    rg_system_set_tick_rate(TICRATE);
+    app = rg_system_init(&config);
 
     SCREENWIDTH = RG_MIN(rg_display_get_width(), MAX_SCREENWIDTH);
     SCREENHEIGHT = RG_MIN(rg_display_get_height(), MAX_SCREENHEIGHT);
 
-    update = rg_surface_create(SCREENWIDTH, SCREENHEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
+    update = rg_surface_create(SCREENWIDTH, SCREENHEIGHT, FB_PIXEL_FORMAT, MEM_FAST);
 
     const char *iwad = NULL;
     const char *pwad = NULL;
@@ -559,7 +582,7 @@ void app_main()
 
     if (!iwad)
     {
-        iwad = rg_gui_file_picker("Select IWAD file", I_DoomExeDir(), is_iwad, false) ?: "";
+        iwad = rg_gui_file_picker("Select IWAD file", I_DoomExeDir(), is_iwad, false, false) ?: "";
         rg_gui_draw_hourglass(); // Redraw hourglass to indicate loading...
     }
 
@@ -573,13 +596,6 @@ void app_main()
     doom_argv[5] = "-file";
     doom_argv[6] = pwad;
     doom_argv[myargc] = 0;
-
-#ifdef ESP_PLATFORM
-    // Some things might be nice to place in internal RAM, but I do not have time to find such
-    // structures. So for now, prefer external RAM for most things except the framebuffer which
-    // is allocated above.
-    heap_caps_malloc_extmem_enable(0);
-#endif
 
     Z_Init();
     D_DoomMain();

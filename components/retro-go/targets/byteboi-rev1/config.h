@@ -24,7 +24,9 @@
 #define RG_SCREEN_BACKLIGHT         0
 #define RG_SCREEN_WIDTH             320
 #define RG_SCREEN_HEIGHT            240
-#define RG_SCREEN_ROTATE            0
+#define RG_SCREEN_ROTATION          5   // Possible values are 0-7 (you'll have to experiment)
+#define RG_SCREEN_RGB_BGR           1   // Possible values are 0-1 (change if colors are bad)
+#define RG_SCREEN_PIXEL_FORMAT      0   // Possible values are 0=565_BE, 1=565_LE
 #define RG_SCREEN_VISIBLE_AREA      {0, 0, 0, 0}
 #define RG_SCREEN_SAFE_AREA         {0, 0, 0, 0}
 #define RG_SCREEN_INIT()                                                                                         \
@@ -39,7 +41,6 @@
     ILI9341_CMD(0xC1, 0x10);                 /* Power control   //SAP[2:0];BT[3:0] */                            \
     ILI9341_CMD(0xC5, 0x3e,0x28);            /* VCM control */                                                   \
     ILI9341_CMD(0xC7, 0x86);                 /* VCM control2 */                                                  \
-    ILI9341_CMD(0x36, 0xA8);                 /* Memory Access Control (MY|MV|BGR) */                             \
     ILI9341_CMD(0xB1, 0x00, 0x10);           /* Frame Rate Control (1B=70, 1F=61, 10=119) */                     \
     ILI9341_CMD(0xB6, 0x08, 0xC2, 0x27);     /* Display Function Control */                                      \
     ILI9341_CMD(0xF6, 0x01, 0x30);                                                                               \
@@ -102,3 +103,4 @@
 // #define RG_GPIO_SND_I2S_WS          GPIO_NUM_NC
 // #define RG_GPIO_SND_I2S_DATA        GPIO_NUM_NC
 #define RG_GPIO_SND_AMP_ENABLE      GPIO_NUM_13
+#define RG_GPIO_SND_AMP_ENABLE_INVERT // Uncomment if the mute = HIGH
