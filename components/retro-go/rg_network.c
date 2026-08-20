@@ -19,7 +19,6 @@
 #define SETTING_WIFI_MODE     "mode"
 
 #ifdef RG_ENABLE_NETWORKING
-#include <esp_idf_version.h>
 #include <esp_http_client.h>
 #include <esp_system.h>
 #include <esp_sntp.h>
@@ -28,13 +27,6 @@
 #include <nvs_flash.h>
 #include <lwip/err.h>
 #include <lwip/sys.h>
-
-#if ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 1, 0)
-#define esp_sntp_init sntp_init
-#define esp_sntp_stop sntp_stop
-#define esp_sntp_setoperatingmode sntp_setoperatingmode
-#define esp_sntp_setservername sntp_setservername
-#endif
 
 static rg_network_state_t network_state = RG_NETWORK_DISABLED;
 static rg_wifi_config_t wifi_config = {0};
@@ -92,31 +84,29 @@ static void network_event_handler(void *arg, esp_event_base_t event_base, int32_
 }
 #endif
 
+#define CFG_KEY(key, slot) ({snprintf(key_buffer, sizeof(key_buffer), "%s%d", key, slot); key_buffer;})
+
 bool rg_network_wifi_read_config(int slot, rg_wifi_config_t *out)
 {
     if (slot < 0 || slot > 99)
         return false;
 
-    char key_ssid[16], key_password[16], key_channel[16], key_mode[16];
     rg_wifi_config_t config = {0};
+    char key_buffer[64] = {0};
     char *ptr;
 
-    snprintf(key_ssid, 16, "%s%d", SETTING_WIFI_SSID, slot);
-    snprintf(key_password, 16, "%s%d", SETTING_WIFI_PASSWORD, slot);
-    snprintf(key_channel, 16, "%s%d", SETTING_WIFI_CHANNEL, slot);
-    snprintf(key_mode, 16, "%s%d", SETTING_WIFI_MODE, slot);
+    RG_LOGD("Looking for '%s' (slot %d)", CFG_KEY(SETTING_WIFI_SSID, slot), slot);
 
-    RG_LOGD("Looking for '%s' (slot %d)\n", key_ssid, slot);
-
-    if ((ptr = rg_settings_get_string(NS_WIFI, key_ssid, NULL)))
+    if ((ptr = rg_settings_get_string(NS_WIFI, CFG_KEY(SETTING_WIFI_SSID, slot), NULL)))
         memccpy(config.ssid, ptr, 0, 32), free(ptr);
-    if ((ptr = rg_settings_get_string(NS_WIFI, key_password, NULL)))
+    if ((ptr = rg_settings_get_string(NS_WIFI, CFG_KEY(SETTING_WIFI_PASSWORD, slot), NULL)))
         memccpy(config.password, ptr, 0, 64), free(ptr);
-    config.channel = rg_settings_get_number(NS_WIFI, key_channel, 0);
-    config.ap_mode = rg_settings_get_number(NS_WIFI, key_mode, 0);
+    config.channel = rg_settings_get_number(NS_WIFI, CFG_KEY(SETTING_WIFI_CHANNEL, slot), 0);
+    config.ap_mode = rg_settings_get_number(NS_WIFI, CFG_KEY(SETTING_WIFI_MODE, slot), 0);
 
     if (!config.ssid[0] && slot == 0)
     {
+        RG_LOGD("Looking for '%s' (slot %d)", SETTING_WIFI_SSID, slot);
         if ((ptr = rg_settings_get_string(NS_WIFI, SETTING_WIFI_SSID, NULL)))
             memccpy(config.ssid, ptr, 0, 32), free(ptr);
         if ((ptr = rg_settings_get_string(NS_WIFI, SETTING_WIFI_PASSWORD, NULL)))
@@ -129,6 +119,38 @@ bool rg_network_wifi_read_config(int slot, rg_wifi_config_t *out)
         return false;
 
     *out = config;
+    return true;
+}
+
+bool rg_network_wifi_write_config(int slot, const rg_wifi_config_t *config)
+{
+    if (slot < 0 || slot > 99 || !config)
+        return false;
+
+    RG_LOGD("Writing config to slot %d", slot);
+
+    char key_buffer[64] = {0};
+    rg_settings_set_string(NS_WIFI, CFG_KEY(SETTING_WIFI_SSID, slot), config->ssid);
+    rg_settings_set_string(NS_WIFI, CFG_KEY(SETTING_WIFI_PASSWORD, slot), config->password);
+    rg_settings_set_number(NS_WIFI, CFG_KEY(SETTING_WIFI_CHANNEL, slot), config->channel);
+    rg_settings_set_number(NS_WIFI, CFG_KEY(SETTING_WIFI_MODE, slot), config->ap_mode);
+
+    return true;
+}
+
+bool rg_network_wifi_delete_config(int slot)
+{
+    if (slot < 0 || slot > 99)
+        return false;
+
+    RG_LOGD("Deleting config in slot %d", slot);
+
+    char key_buffer[64] = {0};
+    rg_settings_delete(NS_WIFI, CFG_KEY(SETTING_WIFI_SSID, slot));
+    rg_settings_delete(NS_WIFI, CFG_KEY(SETTING_WIFI_PASSWORD, slot));
+    rg_settings_delete(NS_WIFI, CFG_KEY(SETTING_WIFI_CHANNEL, slot));
+    rg_settings_delete(NS_WIFI, CFG_KEY(SETTING_WIFI_MODE, slot));
+
     return true;
 }
 

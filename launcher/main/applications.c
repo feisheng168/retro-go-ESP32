@@ -61,8 +61,15 @@ static int scan_folder_cb(const rg_scandir_t *entry, void *arg)
         app->files_capacity = new_capacity;
     }
 
+    char *name = rg_bucket_insert(app->filenames, entry->basename, strlen(entry->basename) + 1);
+    if (!name)
+    {
+        RG_LOGW("Ran out of memory for names, file scanning stopped at %d entries ...", app->files_count);
+        return RG_SCANDIR_STOP;
+    }
+
     app->files[app->files_count++] = (retro_file_t) {
-        .name = strdup(entry->basename),
+        .name = name,
         .folder = rg_unique_string(entry->dirname),
         .checksum = 0,
         .missing_cover = 0,
@@ -129,14 +136,9 @@ static void application_start(retro_file_t *file, int load_state)
     char *part = strdup(file->app->partition);
     char *name = strdup(file->app->short_name);
     char *path = strdup(get_file_path(file));
-    int flags = (gui.startup_mode ? RG_BOOT_ONCE : 0);
-    if (load_state != -1)
-    {
-        flags |= RG_BOOT_RESUME;
-        flags |= (load_state << 4) & RG_BOOT_SLOT_MASK;
-    }
+    int flags = (gui.startup_mode ? RG_BOOT_ONCE : 0) | (load_state != -1 ? RG_BOOT_RESUME : 0);
     bookmark_add(BOOK_TYPE_RECENT, file); // This could relocate *file, but we no longer need it
-    rg_system_switch_app(part, name, path, flags);
+    rg_system_switch_app(part, name, path, load_state, flags);
 }
 
 static uint32_t crc_read_file(retro_file_t *file, bool interactive)
@@ -422,8 +424,8 @@ static void event_handler(gui_event_t event, tab_t *tab)
     {
         if (app && app->initialized)
         {
-            for (size_t i = 0; i < app->files_count; ++i)
-                free((char *)app->files[i].name);
+            rg_bucket_free(app->filenames);
+            app->filenames = rg_bucket_create(4096);
             app->files_count = 0;
             app->initialized = false;
         }
@@ -674,6 +676,7 @@ static void application(const char *desc, const char *name, const char *exts, co
     app->available = rg_system_have_app(app->partition);
     app->files = calloc(100, sizeof(retro_file_t));
     app->files_capacity = 100;
+    app->filenames = rg_bucket_create(4096);
     app->crc_offset = crc_offset;
 
     gui_add_tab(app->short_name, app->description, app, event_handler);
@@ -682,10 +685,10 @@ static void application(const char *desc, const char *name, const char *exts, co
 void applications_init(void)
 {
     application("Nintendo Entertainment System", "nes", "nes fc fds nsf zip", "retro-core", 16);
-    application("Super Nintendo", "snes", "smc sfc zip", "retro-core", 0);
+    application("Super Nintendo", "snes", "smc sfc zip", "snes9x", 0);
     application("Nintendo Gameboy", "gb", "gb gbc zip", "retro-core", 0);
     application("Nintendo Gameboy Color", "gbc", "gbc gb zip", "retro-core", 0);
-    // application("Nintendo Gameboy Advance", "gba", "gba zip", "gbsp", 0);
+    application("Nintendo Gameboy Advance", "gba", "gba zip", "gbsp", 0);
     application("Nintendo Game & Watch", "gw", "gw", "retro-core", 0);
     // application("Sega SG-1000", "sg1", "sms sg sg1", "retro-core", 0);
     application("Sega Master System", "sms", "sms sg zip", "retro-core", 0);
@@ -698,10 +701,11 @@ void applications_init(void)
     // application("Neo Geo Pocket Color", "ngp", "ngp ngc zip", "ngpocket-go", 0);
     application("DOOM", "doom", "wad zip", "prboom-go", 0);
     application("MSX", "msx", "rom mx1 mx2 dsk", "fmsx", 0);
+    application("Super Mario 64", "sm64", "z64 zip", "sm64-go", 0);
 
     // Special app to bootstrap native esp32 binaries from the SD card
     // application("Bootstrap", "apps", "bin elf", "bootstrap", 0);
 
-    if (!rg_system_get_app()->lowMemoryMode)
+    if (rg_system_get_stats().freeMemory > 0x100000)
         crc_cache_init();
 }
