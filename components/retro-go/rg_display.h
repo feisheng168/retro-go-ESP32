@@ -39,7 +39,8 @@ typedef enum
 enum
 {
     RG_DISPLAY_WRITE_NOSYNC = (1 << 0),
-    RG_DISPLAY_WRITE_NOSWAP = (1 << 1),
+    RG_DISPLAY_WRITE_BE_DATA = (1 << 1),
+    RG_DISPLAY_WRITE_DIRECT = (1 << 2),
 };
 
 typedef struct
@@ -74,13 +75,15 @@ typedef struct
     // bool (*write)(int left, int top, int width, int height, int pitch, const uint16_t data);
 } rg_display_driver_t;
 
+#include "rg_surface.h"
+
 typedef struct
 {
     struct
     {
         int real_width, real_height; // Real physical resolution
         int width, height; // Visible resolution (minus margins)
-        struct {int left, top, right, bottom;} margins;
+        rg_margins_t margins;
         int format;
     } screen;
     struct
@@ -95,19 +98,22 @@ typedef struct
         int width, height;
     } source;
     bool changed;
+    bool initialized;
 } rg_display_t;
-
-#include "rg_surface.h"
 
 void rg_display_init(void);
 void rg_display_deinit(void);
+bool rg_display_set_geometry(int width, int height, const rg_margins_t *margins);
 void rg_display_write_rect(int left, int top, int width, int height, int stride, const uint16_t *buffer, uint32_t flags);
 void rg_display_clear_rect(int left, int top, int width, int height, uint16_t color_le);
 void rg_display_clear_except(int left, int top, int width, int height, uint16_t color_le);
 void rg_display_clear(uint16_t color_le);
-bool rg_display_sync(bool block);
+bool rg_display_is_busy(void);
 void rg_display_force_redraw(void);
 void rg_display_submit(const rg_surface_t *update, uint32_t flags);
+// rg_display_sync syncs our internal state to the display. With ILI9341/ST7789 it's a no-op because all writes
+// are direct. With other drivers it is used to signal that the internal framebuffer should be sent to the LCD.
+void rg_display_sync(void);
 
 rg_display_counters_t rg_display_get_counters(void);
 const rg_display_t *rg_display_get_info(void);

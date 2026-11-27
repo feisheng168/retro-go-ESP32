@@ -2,6 +2,15 @@
 
 #include <nofrendo.h>
 
+// #define AUDIO_SAMPLE_RATE   (32000)
+// #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 50 + 1)
+
+#if RG_SCREEN_PIXEL_FORMAT == 0
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_BE
+#else
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_LE
+#endif
+
 static int overscan = true;
 static int autocrop = 0;
 static int palette = 0;
@@ -62,7 +71,9 @@ static void build_palette(int n)
     uint16_t *pal = nofrendo_buildpalette(n, 16);
     for (int i = 0; i < 256; i++)
     {
-        uint16_t color = (pal[i] >> 8) | ((pal[i]) << 8);
+        uint16_t color = pal[i];
+        if (FB_PIXEL_FORMAT  == RG_PIXEL_PAL565_BE)
+            color = (pal[i] >> 8) | ((pal[i]) << 8);
         updates[0]->palette[i] = color;
         updates[1]->palette[i] = color;
     }
@@ -150,7 +161,7 @@ static rg_gui_event_t palette_update_cb(rg_gui_option_t *option, rg_gui_event_t 
 
 static void blit_screen(uint8 *bmp)
 {
-    slowFrame = bmp && !rg_display_sync(false);
+    slowFrame = bmp && rg_display_is_busy();
     // A rolling average should be used for autocrop == 1, it causes jitter in some games...
     // int crop_h = (autocrop == 2) || (autocrop == 1 && nes->ppu->left_bg_counter > 210) ? 8 : 0;
     int crop_v = (overscan) ? nes->overscan : 0;
@@ -175,7 +186,7 @@ static void nsf_draw_overlay(void)
         RG_DIALOG_END,
     };
     snprintf(song, sizeof(song), "%d / %d", nsf_current_song, header->total_songs);
-    rg_gui_draw_dialog("NSF Player", options, -1);
+    rg_gui_draw_dialog("NSF Player", options, 4, -1);
 }
 
 
@@ -205,8 +216,8 @@ void nes_main(void)
     autocrop = rg_settings_get_number(NS_APP, SETTING_AUTOCROP, 0);
     palette = rg_settings_get_number(NS_APP, SETTING_PALETTE, NES_PALETTE_PVM);
 
-    updates[0] = rg_surface_create(NES_SCREEN_PITCH, NES_SCREEN_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
-    updates[1] = rg_surface_create(NES_SCREEN_PITCH, NES_SCREEN_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
+    updates[0] = rg_surface_create(NES_SCREEN_PITCH, NES_SCREEN_HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
+    updates[1] = rg_surface_create(NES_SCREEN_PITCH, NES_SCREEN_HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
     currentUpdate = updates[0];
 
     nes = nes_init(SYS_DETECT, app->sampleRate, true, RG_BASE_PATH_BIOS "/fds_bios.bin");
@@ -261,7 +272,9 @@ void nes_main(void)
 
     while (true)
     {
+        const int64_t startTime = rg_system_timer();
         uint32_t joystick = rg_input_read_gamepad();
+        bool drawFrame = !skipFrames && !nsfPlayer;
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {
@@ -269,12 +282,10 @@ void nes_main(void)
                 rg_gui_game_menu();
             else
                 rg_gui_options_menu();
+            continue;
         }
 
-        int64_t startTime = rg_system_timer();
-        bool drawFrame = !skipFrames && !nsfPlayer;
         int buttons = 0;
-
         if (joystick & RG_KEY_START)  buttons |= NES_PAD_START;
         if (joystick & RG_KEY_SELECT) buttons |= NES_PAD_SELECT;
         if (joystick & RG_KEY_UP)     buttons |= NES_PAD_UP;
@@ -283,14 +294,11 @@ void nes_main(void)
         if (joystick & RG_KEY_LEFT)   buttons |= NES_PAD_LEFT;
         if (joystick & RG_KEY_A)      buttons |= NES_PAD_A;
         if (joystick & RG_KEY_B)      buttons |= NES_PAD_B;
+        input_update(0, buttons);
 
         if (drawFrame)
-        {
             currentUpdate = updates[currentUpdate == updates[0]];
-            nes_setvidbuf(currentUpdate->data);
-        }
-
-        input_update(0, buttons);
+        nes_setvidbuf(currentUpdate->data);
         nes_emulate(drawFrame);
 
         // Tick before submitting audio/syncing
@@ -301,13 +309,12 @@ void nes_main(void)
 
         if (skipFrames == 0)
         {
-            int frameTime = 1000000 / (nes->refresh_rate * app->speed);
             int elapsed = rg_system_timer() - startTime;
             if (nsfPlayer)
                 skipFrames = 10, nsf_draw_overlay();
             else if (app->frameskip > 0)
                 skipFrames = app->frameskip;
-            else if (elapsed > frameTime + 1500) // Allow some jitter
+            else if (elapsed > app->frameTime + 1500) // Allow some jitter
                 skipFrames = 1; // (elapsed / frameTime)
             else if (drawFrame && slowFrame)
                 skipFrames = 1;

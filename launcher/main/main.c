@@ -5,10 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef ESP_PLATFORM
-#include <esp_heap_caps.h>
-#endif
-
 #include "applications.h"
 #include "bookmarks.h"
 #include "browser.h"
@@ -144,22 +140,47 @@ static rg_gui_event_t startup_app_cb(rg_gui_option_t *option, rg_gui_event_t eve
     return RG_DIALOG_VOID;
 }
 
-#ifdef RG_ENABLE_NETWORKING
 static rg_gui_event_t updater_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
-    if (rg_network_get_info().state != RG_NETWORK_CONNECTED)
-    {
-        option->flags = RG_DIALOG_FLAG_DISABLED;
-        return RG_DIALOG_VOID;
-    }
     if (event == RG_DIALOG_ENTER)
     {
-        updater_show_dialog();
+        const rg_gui_option_t options[] = {
+        #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
+            {1, _("Check for updates"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        #endif
+        #if defined(RG_UPDATER_APPLICATION)
+            {2, _("Reboot to installer"), NULL, RG_DIALOG_FLAG_NORMAL, NULL},
+        #endif
+            RG_DIALOG_END,
+        };
+        int sel = rg_gui_dialog(_("Update Retro-Go"), options, 0);
+        #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
+        if (sel == 1)
+            updater_show_dialog();
+        #endif
+        #if defined(RG_UPDATER_APPLICATION)
+        if (sel == 2)
+            rg_system_switch_app(RG_UPDATER_APPLICATION, NULL, NULL, 0, 0);
+        #endif
         return RG_DIALOG_REDRAW;
     }
     return RG_DIALOG_VOID;
 }
 
+static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t event)
+{
+    if (event == RG_DIALOG_ENTER)
+    {
+        rg_input_wait_for_key(RG_KEY_ANY, false, 1000);
+        #ifdef RG_ENABLE_NETWORKING
+        webui_stop();
+        #endif
+        crc_cache_prebuild();
+    }
+    return RG_DIALOG_VOID;
+}
+
+#ifdef RG_ENABLE_NETWORKING
 static rg_gui_event_t webui_switch_cb(rg_gui_option_t *option, rg_gui_event_t event)
 {
     bool enabled = rg_settings_get_number(NS_APP, SETTING_WEBUI, 0);
@@ -175,19 +196,6 @@ static rg_gui_event_t webui_switch_cb(rg_gui_option_t *option, rg_gui_event_t ev
     return RG_DIALOG_VOID;
 }
 #endif
-
-static rg_gui_event_t prebuild_cache_cb(rg_gui_option_t *option, rg_gui_event_t event)
-{
-    if (event == RG_DIALOG_ENTER)
-    {
-        rg_input_wait_for_key(RG_KEY_ANY, false, 1000);
-        #ifdef RG_ENABLE_NETWORKING
-        webui_stop();
-        #endif
-        crc_cache_prebuild();
-    }
-    return RG_DIALOG_VOID;
-}
 
 static void retro_loop(void)
 {
@@ -409,7 +417,21 @@ static void try_migrate(void)
 void event_handler(int event, void *arg)
 {
     if (event == RG_EVENT_REDRAW)
+    {
         gui_redraw();
+    }
+    else if (event == RG_EVENT_GEOMETRY)
+    {
+        RG_LOGW("Here we should add basic checks and also clear all loaded images...");
+        gui.width = rg_display_get_width();
+        gui.height = rg_display_get_height();
+        if (gui.surface)
+        {
+            gui.surface->width = gui.width;
+            gui.surface->height = gui.height;
+            gui.surface->stride = gui.width * 2;
+        }
+    }
 }
 
 static void options_handler(rg_gui_option_t *dest)
@@ -432,42 +454,29 @@ static void options_handler(rg_gui_option_t *dest)
 static void about_handler(rg_gui_option_t *dest)
 {
     *dest++ = (rg_gui_option_t){0, _("Build CRC cache"), NULL, RG_DIALOG_FLAG_NORMAL, &prebuild_cache_cb};
-    #if defined(RG_ENABLE_NETWORKING) && RG_UPDATER_ENABLE
-    *dest++ = (rg_gui_option_t){0, _("Check for updates"), NULL, RG_DIALOG_FLAG_NORMAL, &updater_cb};
-    #endif
+    *dest++ = (rg_gui_option_t){0, _("Update Retro-Go"), NULL, RG_DIALOG_FLAG_NORMAL, &updater_cb};
     *dest++ = (rg_gui_option_t)RG_DIALOG_END;
 }
 
 void app_main(void)
 {
-    const rg_handlers_t handlers = {
-        .event = &event_handler,
-        .options = &options_handler,
-        .about = &about_handler,
-    };
-
-    app = rg_system_init(32000, &handlers, NULL);
+    app = rg_system_init(&(const rg_config_t){
+        .sampleRate = 32000,
+        .frameRate = 0,
+        .storageRequired = true,
+        .isLauncher = true,
+        .handlers.event = &event_handler,
+        .handlers.options = &options_handler,
+        .handlers.about = &about_handler,
+        // The launcher makes a lot of small allocations and it sometimes fills internal RAM,
+        // causing the SD Card driver to stop working.
+        .mallocAlwaysInternal = 1024,
+    });
     app->configNs = "launcher";
-    app->isLauncher = true;
 
-    if (!rg_storage_ready())
-    {
-        rg_display_clear(C_SKY_BLUE);
-        rg_gui_alert(_("SD Card Error"), _("Storage mount failed.\nMake sure the card is FAT32."));
-    }
-    else
-    {
-        rg_storage_mkdir(RG_BASE_PATH_CACHE);
-        rg_storage_mkdir(RG_BASE_PATH_CONFIG);
-        try_migrate();
-    }
-
-#ifdef ESP_PLATFORM
-    // The launcher makes a lot of small allocations and it sometimes fills internal RAM, causing the SD Card driver to
-    // stop working. Lowering CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL and manually using rg_alloc to do internal allocs when
-    // needed is a better solution, but that would have to be done for every app. This is a good workaround for now.
-    heap_caps_malloc_extmem_enable(1024);
-#endif
+    rg_storage_mkdir(RG_BASE_PATH_CACHE);
+    rg_storage_mkdir(RG_BASE_PATH_CONFIG);
+    try_migrate();
 
     retro_loop();
 }
