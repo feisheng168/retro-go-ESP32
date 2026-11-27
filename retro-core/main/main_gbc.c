@@ -3,6 +3,15 @@
 #include <sys/time.h>
 #include <gnuboy.h>
 
+// #define AUDIO_SAMPLE_RATE   (32000)
+// #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 50 + 1)
+
+#if RG_SCREEN_PIXEL_FORMAT == 0
+#define FB_PIXEL_FORMAT  RG_PIXEL_565_BE
+#else
+#define FB_PIXEL_FORMAT  RG_PIXEL_565_LE
+#endif
+
 static int skipFrames = 0;
 static bool slowFrame = false;
 
@@ -219,7 +228,7 @@ static rg_gui_event_t rtc_update_cb(rg_gui_option_t *option, rg_gui_event_t even
 static void video_callback(void *buffer)
 {
     int64_t startTime = rg_system_timer();
-    slowFrame = !rg_display_sync(false);
+    slowFrame = rg_display_is_busy();
     rg_display_submit(currentUpdate, 0);
     video_time += rg_system_timer() - startTime;
 }
@@ -254,8 +263,10 @@ void gbc_main(void)
 
     app = rg_system_reinit(AUDIO_SAMPLE_RATE, &handlers, NULL);
 
-    updates[0] = rg_surface_create(GB_WIDTH, GB_HEIGHT, RG_PIXEL_565_BE, MEM_ANY);
-    updates[1] = rg_surface_create(GB_WIDTH, GB_HEIGHT, RG_PIXEL_565_BE, MEM_ANY);
+    bool d565be = rg_display_get_info()->screen.format == RG_PIXEL_565_BE;
+
+    updates[0] = rg_surface_create(GB_WIDTH, GB_HEIGHT, FB_PIXEL_FORMAT , MEM_ANY);
+    updates[1] = rg_surface_create(GB_WIDTH, GB_HEIGHT, FB_PIXEL_FORMAT , MEM_ANY);
     currentUpdate = updates[0];
 
     useSystemTime = (bool)rg_settings_get_number(NS_APP, SETTING_SYSTIME, 1);
@@ -267,7 +278,8 @@ void gbc_main(void)
         RG_LOGE("Unable to create SRAM folder...");
 
     // Initialize the emulator
-    if (gnuboy_init(app->sampleRate, GB_AUDIO_STEREO_S16, GB_PIXEL_565_BE, &video_callback, &audio_callback) < 0)
+    const gb_video_fmt_t video_fmt = FB_PIXEL_FORMAT  == RG_PIXEL_565_BE ? GB_PIXEL_565_BE : GB_PIXEL_565_LE;
+    if (gnuboy_init(app->sampleRate, GB_AUDIO_STEREO_S16, video_fmt, &video_callback, &audio_callback) < 0)
         RG_PANIC("Emulator init failed!");
 
     gnuboy_set_framebuffer(currentUpdate->data);
@@ -313,11 +325,12 @@ void gbc_main(void)
     // Ready!
 
     uint32_t joystick_old = -1;
-    uint32_t joystick = 0;
 
     while (true)
     {
-        joystick = rg_input_read_gamepad();
+        const int64_t startTime = rg_system_timer();
+        uint32_t joystick = rg_input_read_gamepad();
+        bool drawFrame = !skipFrames;
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {
@@ -329,8 +342,10 @@ void gbc_main(void)
             }
             else
                 rg_gui_options_menu();
+            continue;
         }
-        else if (joystick != joystick_old)
+
+        if (joystick != joystick_old)
         {
             int pad = 0;
             if (joystick & RG_KEY_UP) pad |= GB_PAD_UP;
@@ -344,9 +359,6 @@ void gbc_main(void)
             gnuboy_set_pad(pad); // That call is somewhat costly, that's why we try to avoid it
             joystick_old = joystick;
         }
-
-        int64_t startTime = rg_system_timer();
-        bool drawFrame = !skipFrames;
 
         video_time = audio_time = 0;
 
