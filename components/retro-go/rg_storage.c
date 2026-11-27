@@ -12,6 +12,9 @@
 #define SDCARD_DO_TRANSACTION sdspi_host_do_transaction
 #elif defined(RG_STORAGE_SDMMC_HOST)
 #include <driver/sdmmc_host.h>
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+#include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#endif
 #define SDCARD_DO_TRANSACTION sdmmc_host_do_transaction
 #endif
 
@@ -121,19 +124,39 @@ void rg_storage_init(void)
     RG_LOGI("Looking for SD Card using SDMMC...");
 
     sdmmc_host_t host_config = SDMMC_HOST_DEFAULT();
-    host_config.flags = SDMMC_HOST_FLAG_1BIT;
     host_config.slot = RG_STORAGE_SDMMC_HOST;
     host_config.max_freq_khz = RG_STORAGE_SDMMC_SPEED;
     host_config.do_transaction = &sdcard_do_transaction;
 
+#ifdef CONFIG_IDF_TARGET_ESP32P4
+    sd_pwr_ctrl_ldo_config_t ldo_config = {
+        .ldo_chan_id = 4,
+    };
+    sd_pwr_ctrl_handle_t pwr_ctrl_handle = NULL;
+
+    esp_err_t ret = sd_pwr_ctrl_new_on_chip_ldo(&ldo_config, &pwr_ctrl_handle);
+    if (ret != ESP_OK) {
+        RG_LOGE("Failed to create a new on-chip LDO power control driver");
+        return;
+    }
+    host_config.pwr_ctrl_handle = pwr_ctrl_handle;
+#endif
+
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
     slot_config.width = 1;
-#if SOC_SDMMC_USE_GPIO_MATRIX
-    slot_config.clk = RG_GPIO_SDSPI_CLK;
-    slot_config.cmd = RG_GPIO_SDSPI_CMD;
-    slot_config.d0 = RG_GPIO_SDSPI_D0;
+#if SOC_SDMMC_USE_GPIO_MATRIX /* Only the esp32-s3 routes SDMMC through the GPIO matrix */
+    slot_config.clk = RG_GPIO_SDMMC_CLK;
+    slot_config.cmd = RG_GPIO_SDMMC_CMD;
+    slot_config.d0 = RG_GPIO_SDMMC_D0;
+#if defined(RG_GPIO_SDMMC_D1) && defined(RG_GPIO_SDMMC_D2) && defined(RG_GPIO_SDMMC_D3)
+    slot_config.width = 4;
+    slot_config.d1 = RG_GPIO_SDMMC_D1;
+    slot_config.d2 = RG_GPIO_SDMMC_D2;
+    slot_config.d3 = RG_GPIO_SDMMC_D3;
+#else
     // d1 and d3 normally not used in width=1 but sdmmc_host_init_slot saves them, so just in case
     slot_config.d1 = slot_config.d3 = -1;
+#endif
 #endif
 
     esp_vfs_fat_mount_config_t mount_config = {
@@ -334,12 +357,17 @@ bool rg_storage_scandir(const char *path, rg_scandir_cb_t *callback, void *arg, 
 
     DIR *dir = opendir(path);
     if (!dir)
+    {
+        if (errno != ENOENT) // Only log unusual errors. Path not found isn't unusual.
+            RG_LOGE("Opendir failed (%d): '%s'", errno, path);
         return false;
+    }
 
     // We allocate on heap in case we go recursive through rg_storage_delete
     rg_scandir_t *result = calloc(1, sizeof(rg_scandir_t));
     if (!result)
     {
+        RG_LOGE("Memory allocation failed: '%s'", path);
         closedir(dir);
         return false;
     }
@@ -433,7 +461,8 @@ bool rg_storage_read_file(const char *path, void **data_out, size_t *data_len, u
     FILE *fp = fopen(path, "rb");
     if (!fp)
     {
-        RG_LOGE("Fopen failed (%d): '%s'", errno, path);
+        if (errno != ENOENT) // Only log unusual errors. Path not found isn't unusual.
+            RG_LOGE("Fopen failed (%d): '%s'", errno, path);
         return false;
     }
 
@@ -515,11 +544,7 @@ bool rg_storage_write_file(const char *path, const void *data_ptr, size_t data_l
  */
 #if RG_ZIP_SUPPORT
 
-#if defined(ESP_PLATFORM) && ESP_IDF_VERSION_MAJOR < 5
-#include <rom/miniz.h>
-#else
 #include <miniz.h>
-#endif
 
 #define ZIP_MAGIC 0x04034b50
 typedef struct __attribute__((packed))
@@ -551,7 +576,8 @@ bool rg_storage_unzip_file(const char *zip_path, const char *filter, void **data
     FILE *fp = fopen(zip_path, "rb");
     if (!fp)
     {
-        RG_LOGE("Fopen failed (%d): '%s'", errno, zip_path);
+        if (errno != ENOENT) // Only log unusual errors. Path not found isn't unusual.
+            RG_LOGE("Fopen failed (%d): '%s'", errno, zip_path);
         return false;
     }
 
