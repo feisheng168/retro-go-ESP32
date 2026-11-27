@@ -4,6 +4,12 @@
 #define AUDIO_SAMPLE_RATE (32000)
 #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 60 + 1)
 
+#if RG_SCREEN_PIXEL_FORMAT == 0
+#define FB_PIXEL_FORMAT RG_PIXEL_565_BE
+#else
+#define FB_PIXEL_FORMAT RG_PIXEL_565_LE
+#endif
+
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
 static rg_task_t *audioQueue;
@@ -212,7 +218,9 @@ int InitMachine(void)
     for (int J = 0; J < 256; J++)
     {
         uint16_t color = C_RGB(((J >> 2) & 0x07) * 255 / 7, ((J >> 5) & 0x07) * 255 / 7, (J & 0x03) * 255 / 3);
-        BPal[J] = ((color >> 8) | (color << 8)) & 0xFFFF;
+        if (FB_PIXEL_FORMAT  == RG_PIXEL_565_BE)
+            color = (color >> 8) | (color << 8);
+        BPal[J] = color;
     }
 
     InitSound(AUDIO_SAMPLE_RATE, 150);
@@ -232,7 +240,8 @@ void TrashMachine(void)
 void SetColor(byte N, byte R, byte G, byte B)
 {
     uint16_t color = C_RGB(R, G, B);
-    color = (color >> 8) | (color << 8);
+    if (FB_PIXEL_FORMAT  == RG_PIXEL_565_BE)
+        color = (color >> 8) | (color << 8);
     if (N)
         XPal[N] = color;
     else
@@ -335,8 +344,8 @@ unsigned int GetFreeAudio(void)
 void PlayAllSound(int uSec)
 {
     int64_t start = rg_system_timer();
-    unsigned int samples = 2 * uSec * AUDIO_SAMPLE_RATE / 1000000;
-    rg_task_send(audioQueue, &(rg_task_msg_t){.dataInt = samples});
+    rg_task_msg_t msg = {.dataInt = 2 * uSec * AUDIO_SAMPLE_RATE / 1000000};
+    rg_task_send(audioQueue, &msg, -1);
     FrameStartTime += rg_system_timer() - start;
 }
 
@@ -403,10 +412,10 @@ static void audioTask(void *arg)
 {
     RG_LOGI("task started");
     rg_task_msg_t msg;
-    while (rg_task_peek(&msg))
+    while (rg_task_peek(&msg, -1))
     {
         RenderAndPlayAudio(msg.dataInt);
-        rg_task_receive(&msg);
+        rg_task_receive(&msg, -1);
     }
 }
 
@@ -419,21 +428,23 @@ static void options_handler(rg_gui_option_t *dest)
 
 void app_main(void)
 {
-    const rg_handlers_t handlers = {
-        .loadState = &load_state_handler,
-        .saveState = &save_state_handler,
-        .reset = &reset_handler,
-        .screenshot = &screenshot_handler,
-        .event = &event_handler,
-        .options = &options_handler,
-    };
+    app = rg_system_init(&(const rg_config_t){
+        .sampleRate = AUDIO_SAMPLE_RATE,
+        .frameRate = 55, // This is probably not right, but the emulator outputs 440 samples per frame??
+        .storageRequired = true,
+        .romRequired = false,
+        .handlers = {
+            .loadState = &load_state_handler,
+            .saveState = &save_state_handler,
+            .reset = &reset_handler,
+            .screenshot = &screenshot_handler,
+            .event = &event_handler,
+            .options = &options_handler,
+        },
+    });
 
-    app = rg_system_init(AUDIO_SAMPLE_RATE, &handlers, NULL);
-    // This is probably not right, but the emulator outputs 440 samples per frame??
-    rg_system_set_tick_rate(55);
-
-    updates[0] = rg_surface_create(WIDTH, HEIGHT, RG_PIXEL_565_BE, MEM_FAST);
-    updates[1] = rg_surface_create(WIDTH, HEIGHT, RG_PIXEL_565_BE, MEM_FAST);
+    updates[0] = rg_surface_create(WIDTH, HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
+    updates[1] = rg_surface_create(WIDTH, HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
     currentUpdate = updates[0];
 
     KeyboardEmulation = rg_settings_get_number(NS_APP, "Input", 1);
@@ -474,7 +485,7 @@ void app_main(void)
     }
     argv[argc++] = app->romPath;
 
-    audioQueue = rg_task_create("audioTask", &audioTask, NULL, 4096, RG_TASK_PRIORITY_2, 1);
+    audioQueue = rg_task_create("audioTask", &audioTask, NULL, 4096, 1, RG_TASK_PRIORITY_2, 1);
 
     RG_LOGI("fMSX start");
     fmsx_main(argc, (char **)argv);

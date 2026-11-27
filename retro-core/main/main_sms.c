@@ -2,19 +2,23 @@
 
 #include <smsplus.h>
 
+// #define AUDIO_SAMPLE_RATE   (32000)
+// #define AUDIO_BUFFER_LENGTH (AUDIO_SAMPLE_RATE / 50 + 1)
+
+#if RG_SCREEN_PIXEL_FORMAT == 0
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_BE
+#else
+#define FB_PIXEL_FORMAT RG_PIXEL_PAL565_LE
+#endif
+
 static rg_app_t *app;
 static rg_surface_t *updates[2];
 static rg_surface_t *currentUpdate;
 
-const rg_keyboard_map_t coleco_keyboard = {
+const rg_keyboard_layout_t coleco_keyboard = {
+    .layout = "123" "456" "789" "*0#",
     .columns = 3,
     .rows = 4,
-    .data = {
-        '1', '2', '3',
-        '4', '5', '6',
-        '7', '8', '9',
-        '*', '0', '#',
-    },
 };
 
 static const char *SETTING_PALETTE = "palette";
@@ -48,7 +52,7 @@ static bool save_state_handler(const char *filename)
 
 static bool load_state_handler(const char *filename)
 {
-    FILE* f = fopen(filename, "r");
+    FILE* f = fopen(filename, "rb");
     if (f)
     {
         system_load_state(f);
@@ -112,8 +116,8 @@ void sms_main(void)
 
     app = rg_system_reinit(AUDIO_SAMPLE_RATE, &handlers, NULL);
 
-    updates[0] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
-    updates[1] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, RG_PIXEL_PAL565_BE, MEM_FAST);
+    updates[0] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
+    updates[1] = rg_surface_create(SMS_WIDTH, SMS_HEIGHT, FB_PIXEL_FORMAT , MEM_FAST);
     currentUpdate = updates[0];
 
     system_reset_config();
@@ -171,7 +175,10 @@ void sms_main(void)
 
     while (true)
     {
+        const int64_t startTime = rg_system_timer();
         uint32_t joystick = rg_input_read_gamepad();
+        bool drawFrame = !skipFrames;
+        bool slowFrame = false;
 
         if (joystick & (RG_KEY_MENU|RG_KEY_OPTION))
         {
@@ -179,11 +186,8 @@ void sms_main(void)
                 rg_gui_game_menu();
             else
                 rg_gui_options_menu();
+            continue;
         }
-
-        int64_t startTime = rg_system_timer();
-        bool drawFrame = !skipFrames;
-        bool slowFrame = false;
 
         input.pad[0] = 0x00;
         input.pad[1] = 0x00;
@@ -221,7 +225,7 @@ void sms_main(void)
             {
                 rg_gui_draw_text(RG_GUI_CENTER, RG_GUI_CENTER, 0, _("To start, try: 1 or * or #"), C_YELLOW, C_BLACK, RG_TEXT_BIGGER);
                 rg_audio_set_mute(true);
-                int key = rg_input_read_keyboard(&coleco_keyboard);
+                int key = rg_gui_input_char(&coleco_keyboard);
                 rg_audio_set_mute(false);
 
                 if (key >= '0' && key <= '9')
@@ -232,12 +236,14 @@ void sms_main(void)
                     colecoKey = 11;
                 else
                     colecoKey = 255;
-                colecoKeyDecay = 3;
+                colecoKeyDecay = 4;
+                continue;
             }
             else if (joystick & RG_KEY_SELECT)
             {
                 rg_task_delay(100);
                 system_reset();
+                continue;
             }
         }
 
@@ -246,8 +252,17 @@ void sms_main(void)
         if (drawFrame)
         {
             if (render_copy_palette(currentUpdate->palette))
+            {
+                // render_copy_palette gives us big-endian colors
+                if (FB_PIXEL_FORMAT  != RG_PIXEL_PAL565_BE)
+                {
+                    uint16_t *palette = currentUpdate->palette;
+                    for (size_t i = 0; i < 256; ++i)
+                        palette[i] = (palette[i] << 8) | (palette[i] >> 8);
+                }
                 memcpy(updates[currentUpdate == updates[0]]->palette, currentUpdate->palette, 512);
-            slowFrame = !rg_display_sync(false);
+            }
+            slowFrame = rg_display_is_busy();
             rg_display_submit(currentUpdate, 0);
             currentUpdate = updates[currentUpdate == updates[0]]; // Swap
             bitmap.data = currentUpdate->data;

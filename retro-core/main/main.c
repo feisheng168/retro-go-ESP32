@@ -3,7 +3,12 @@
 
 void app_main(void)
 {
-    rg_app_t *app = rg_system_init(AUDIO_SAMPLE_RATE, NULL, NULL);
+    rg_app_t *app = rg_system_init(&(const rg_config_t){
+        .sampleRate = AUDIO_SAMPLE_RATE,
+        .frameRate = 60, // This was the old default, let's keep it
+        .storageRequired = true,
+        .romRequired = true,
+    });
 
     RG_LOGI("configNs=%s", app->configNs);
 
@@ -21,8 +26,6 @@ void app_main(void)
         sms_main();
     else if (strcmp(app->configNs, "gw") == 0)
         gw_main();
-    else if (strcmp(app->configNs, "snes") == 0)
-        snes_main();
 #ifndef __TINYC__
     else if (strcmp(app->configNs, "lnx") == 0)
         lynx_main();

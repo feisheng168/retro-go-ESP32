@@ -18,7 +18,7 @@
 // Audio
 #define RG_AUDIO_USE_BUZZER_PIN     46
 #define RG_AUDIO_USE_INT_DAC        0   // 0 = Disable, 1 = GPIO25, 2 = GPIO26, 3 = Both
-#define RG_AUDIO_USE_EXT_DAC        0   // 0 = Disable, 1 = Enable
+#define RG_AUDIO_USE_EXT_DAC        1   // 0 = Disable, 1 = Enable
 
 // Video
 #define RG_SCREEN_DRIVER            0   // 0 = ILI9341/ST7789
@@ -27,7 +27,9 @@
 #define RG_SCREEN_BACKLIGHT         0
 #define RG_SCREEN_WIDTH             296
 #define RG_SCREEN_HEIGHT            240
-#define RG_SCREEN_ROTATE            0
+#define RG_SCREEN_ROTATION          1   // Possible values are 0-7 (you'll have to experiment)
+#define RG_SCREEN_RGB_BGR           1   // Possible values are 0-1 (change if colors are bad)
+#define RG_SCREEN_PIXEL_FORMAT      0   // Possible values are 0=565_BE, 1=565_LE
 #define RG_SCREEN_VISIBLE_AREA      {0, 0, 0, 0}  // Left, Top, Right, Bottom
 #define RG_SCREEN_SAFE_AREA         {0, 0, 0, 0}  // Left, Top, Right, Bottom
 #define RG_SCREEN_INIT()                                                                                         \
@@ -41,7 +43,6 @@
     ILI9341_CMD(0xC1, 0x12);                 /* Power control   //SAP[2:0];BT[3:0] */                            \
     ILI9341_CMD(0xC5, 0x32, 0x3C);           /* VCM control */                                                   \
     ILI9341_CMD(0xC7, 0x91);                 /* VCM control2 */                                                  \
-    ILI9341_CMD(0x36, 0x28);                 /* Memory Access Control (MV|BGR) */                                \
     ILI9341_CMD(0xB1, 0x00, 0x10);           /* Frame Rate Control (1B=70, 1F=61, 10=119) */                     \
     ILI9341_CMD(0xB6, 0x0A, 0xA2);           /* Display Function Control */                                      \
     ILI9341_CMD(0xF6, 0x01, 0x30);                                                                               \
@@ -104,3 +105,7 @@
 #define RG_GPIO_SDSPI_CLK           RG_GPIO_LCD_CLK
 #define RG_GPIO_SDSPI_CS            GPIO_NUM_14
 
+// External I2S DAC
+#define RG_GPIO_SND_I2S_BCK         GPIO_NUM_2
+#define RG_GPIO_SND_I2S_WS          GPIO_NUM_47 // also known as LRCK
+#define RG_GPIO_SND_I2S_DATA        GPIO_NUM_16

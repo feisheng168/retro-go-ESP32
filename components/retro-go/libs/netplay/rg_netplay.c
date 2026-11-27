@@ -345,7 +345,7 @@ static void netplay_init()
         ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE)); // Improves latency a lot
         ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
-        rg_task_create("rg_netplay", &netplay_task, NULL, 4096, RG_TASK_PRIORITY - 2, 1);
+        rg_task_create("rg_netplay", &netplay_task, NULL, 4096, 1, RG_TASK_PRIORITY_5, 1);
     }
 }
 
@@ -417,7 +417,7 @@ bool rg_netplay_quick_start(void)
         if (screen_msg != status_msg)
         {
             rg_display_clear(0);
-            rg_gui_draw_dialog(status_msg, NULL, 0);
+            rg_gui_draw_message(status_msg);
             screen_msg = status_msg;
         }
 

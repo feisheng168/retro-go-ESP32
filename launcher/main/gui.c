@@ -45,8 +45,8 @@ void gui_init(bool cold_boot)
     gui.browse = gui.start_screen == START_SCREEN_BROWSER || (gui.start_screen == START_SCREEN_AUTO && !cold_boot);
     gui.theme = &gui.themes[gui.color_theme % RG_COUNT(gui.themes)];
     gui.http_lock = false;
-    gui.low_memory_mode = rg_system_get_app()->lowMemoryMode;
     gui.surface = rg_surface_create(gui.width, gui.height, RG_PIXEL_565_LE, MEM_SLOW);
+    gui.low_memory_mode = rg_system_get_stats().freeMemory < 0x100000;
     gui_update_theme();
 }
 
@@ -372,7 +372,9 @@ void gui_scroll_list(tab_t *tab, scroll_whence_t mode, int arg)
 
 void gui_redraw(void)
 {
-    rg_display_sync(true);
+    while (rg_display_is_busy())
+        rg_task_yield(); // Wait for gui.surface to be released
+
     rg_gui_set_surface(gui.surface);
 
     tab_t *tab = gui_get_current_tab();
@@ -631,7 +633,7 @@ void gui_load_preview(tab_t *tab)
 
     if (!tab->preview && file->checksum && (show_missing_cover || errors))
     {
-        RG_LOGI("No image found for '%s'\n", file->name);
+        RG_LOGD("No image found for '%s'\n", file->name);
         gui_set_status(tab, NULL, errors ? "Bad cover" : "No cover");
         // gui_draw_status(tab);
         // tab->preview = gui_get_image("cover", file->app);
